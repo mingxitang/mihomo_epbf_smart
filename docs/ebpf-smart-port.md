@@ -88,3 +88,31 @@ kernel/cgroup capabilities.
 Downloaded artifacts are stored under the ignored local directory
 `output/github-actions-31680555204/`; their SHA-256 digests match the checksum
 files emitted by the workflow.
+
+## Automatic upstream synchronization
+
+`.github/workflows/sync-upstreams.yml` checks both source forks every six
+hours and can also be run manually. It uses `.github/upstream-state.json` as
+the last successfully integrated baseline.
+
+An upstream is synchronized only after both its source and its release output
+show a material update:
+
+- Smart: `vernesong/mihomo` `Alpha` must advance, the rolling
+  `Prerelease-Alpha` release must change, and at least one asset name must
+  contain the new `Alpha` commit's seven-character hash. This handles Smart's
+  practice of replacing files in one long-lived release.
+- eBPF: the latest `TanakaLun/mihomo` release must change and its tag must point
+  to a newer commit in `ebpf-inbound`. Unreleased commits are not integrated.
+
+Ready changes are merged into `Alpha`, the state file is committed, and the
+`Build eBPF branch` workflow is dispatched. A clean scheduled check makes no
+commit and starts no build. If histories diverge or a merge conflicts, the
+workflow does not push a partial result and creates or updates an issue named
+`[automation] Smart/eBPF upstream synchronization failed`.
+
+The eBPF feature was originally tree-ported, so its initial state commit is
+not an ancestor of this repository. On the first future eBPF release, the
+workflow records that already-integrated snapshot with an `ours` merge before
+merging only the newer released commits. Subsequent updates use ordinary
+ancestry-based merges.
