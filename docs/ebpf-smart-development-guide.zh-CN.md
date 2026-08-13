@@ -275,6 +275,25 @@ sha256sum -c mihomo-ebpf-linux-amd64.sha256
 
 注意：`build-ebpf.yml` 与 `ebpf-test.yml` 当前使用相同的 concurrency group。一次 push 同时触发它们时，其中一个可能取消另一个。完整的 `build-ebpf.yml` 已经包含普通测试和 eBPF 测试，应以它的成功结果和 artifacts 为最终构建依据；后续可以考虑为两个工作流拆分 concurrency group。
 
+### 5.5 成功构建后自动发布 Release
+
+`.github/workflows/release-ebpf.yml` 监听 `Alpha` 上的 `Build eBPF branch`。只有整个构建工作流成功后，它才会：
+
+1. 再次通过 GitHub API 校验来源工作流、分支、结论和提交 SHA；
+2. 下载 Linux AMD64 v3、Linux ARM64 和 Android ARM64 三个 artifact；
+3. 校验构建阶段生成的 SHA-256；
+4. 发布一个带唯一构建 run ID 的 GitHub prerelease。
+
+Release 同时包含三个原始二进制、对应的 `.sha256` 和 `BUILD_INFO.txt`。标签格式为：
+
+```text
+ebpf-alpha-YYYYMMDD-rRUN_ID-COMMIT_SHA前12位
+```
+
+每次成功的完整构建都会对应一个 Release；同一 run ID 重跑发布工作流时会识别已有标签，不会重复发布。因为维护分支是 `Alpha`，自动发布默认标记为 prerelease。
+
+如果自动触发失败，但原构建 artifact 仍在保留期内，可以手动运行 `Release successful eBPF build`，输入成功的 `Build eBPF branch` run ID。手动模式仍会拒绝失败构建、其他工作流或非 `Alpha` 分支的构建。工作流使用仓库内置的 `GITHUB_TOKEN`，权限仅为读取 Actions 和写入仓库 Release，不需要额外配置个人令牌。
+
 ## 6. 自动同步两个上游
 
 自动化文件：
@@ -572,5 +591,6 @@ DNS 正常返回 fake-IP 后，BPF CIDR policy 在 mihomo 之前把这个地址�
 - `common/ebpf/README.md`：eBPF backend 实现说明；
 - `common/ebpf/check-kernel.sh`：目标内核能力探测；
 - `.github/workflows/build-ebpf.yml`：完整测试与构建；
+- `.github/workflows/release-ebpf.yml`：成功构建后的校验与自动 prerelease；
 - `.github/workflows/sync-upstreams.yml`：release 驱动的自动上游同步；
 - `.github/upstream-state.json`：最后成功集成的上游状态。
