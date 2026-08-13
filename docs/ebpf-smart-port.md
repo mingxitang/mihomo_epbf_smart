@@ -2,6 +2,8 @@
 
 This branch combines the Smart policy-group implementation from
 `vernesong/mihomo` with the cgroup eBPF inbound from `TanakaLun/mihomo`.
+The maintained combined source is published at
+`https://github.com/mingxitang/mihomo_epbf_smart` on the `Alpha` branch.
 
 ## Pinned baselines
 
