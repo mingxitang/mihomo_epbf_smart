@@ -115,6 +115,19 @@ ARM64, and Android ARM64 artifacts from commit `f4d64eee`; downloaded copies
 and their matching SHA-256 files are stored under the ignored local directory
 `output/github-actions-31689935993/`.
 
+### UDP timeout unit correction
+
+The follow-up diagnosis found that the listener converted the integer
+`udp-timeout` option directly to `time.Duration`. Configuration values use
+seconds, so `udp-timeout: 300` became 300 nanoseconds. The userspace sweep was
+clamped to every five seconds while the BPF flow timeout rounded up to one
+second, which could still remove a DNS binding before a response was written.
+
+The listener now multiplies configured values by one second, validates negative
+and overflowing values, and reports the effective duration in its attachment
+log. With `udp-timeout: 300`, verify that startup reports
+`udp_timeout=5m0s`.
+
 ## Automatic upstream synchronization
 
 `.github/workflows/sync-upstreams.yml` checks both source forks every six

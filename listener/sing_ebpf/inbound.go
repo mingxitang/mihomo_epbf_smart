@@ -124,9 +124,9 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 	if err != nil {
 		return nil, E.Cause(err, "parse exclude_uid_range")
 	}
-	udpTimeout := time.Duration(options.UDPTimeout)
-	if udpTimeout == 0 {
-		udpTimeout = 5 * time.Minute
+	udpTimeout, err := normalizeUDPTimeout(options.UDPTimeout)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := validateAndroidUIDOptions(runtime.GOOS, options); err != nil {
@@ -305,10 +305,11 @@ func (i *Inbound) start() error {
 	if i.cgroupIPv6Mode == cgroupIPv6ModeAuto && i.cgroupIPv6Enabled() {
 		log.Infoln("[EBPF] local cgroup IPv6 interception: available=%v", i.cgroupIPv6Available)
 	}
-	log.Infoln("[EBPF] inbound attached: cgroup=%s, listen_port=%d, dns_mode=%s, cgroup_ipv6_mode=%s, self_bypass=%s, redirect_address=[%s], bypass_cidr={ipv4:%d, ipv6:%d}, programs=[%s]",
+	log.Infoln("[EBPF] inbound attached: cgroup=%s, listen_port=%d, dns_mode=%s, udp_timeout=%s, cgroup_ipv6_mode=%s, self_bypass=%s, redirect_address=[%s], bypass_cidr={ipv4:%d, ipv6:%d}, programs=[%s]",
 		backend.CgroupPath(),
 		i.listeners.selectedPort(),
 		i.dnsMode,
+		i.udpTimeout,
 		i.cgroupIPv6Mode,
 		backend.SelfBypassMode(),
 		strings.Join(i.redirectAddressStrings(), ", "),
