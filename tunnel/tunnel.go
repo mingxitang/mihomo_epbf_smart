@@ -482,7 +482,10 @@ func handleUDPConn(packet C.PacketAdapter) {
 			// recover info to dialMetadata for smart
 			dialMetadata.Host = metadata.Host
 
-			pc := statistic.NewUDPTracker(rawPc, statistic.DefaultManager, dialMetadata, rule, 0, 0, true)
+			pc := rawPc
+			if proxy.Type() != C.Dns {
+				pc = statistic.NewUDPTracker(rawPc, statistic.DefaultManager, dialMetadata, rule, 0, 0, true)
+			}
 
 			sender.AddMapping(originMetadata, dialMetadata)
 			oAddrPort := dialMetadata.AddrPort()
@@ -621,7 +624,9 @@ func handleTCPConn(connCtx C.ConnContext) {
 	// recover info to dialMetadata for smart
 	dialMetadata.Host = metadata.Host
 
-	remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, dialMetadata, rule, int64(peekLen), 0, true)
+	if proxy.Type() != C.Dns {
+		remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, dialMetadata, rule, int64(peekLen), 0, true)
+	}
 	defer func(remoteConn C.Conn) {
 		_ = remoteConn.Close()
 	}(remoteConn)
@@ -702,7 +707,7 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 					}
 				}
 
-				if ! smart {
+				if !smart {
 					metadata.SmartTarget = ""
 				} else {
 					metadata.SmartBlock = "normal"

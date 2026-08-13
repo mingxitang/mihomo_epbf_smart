@@ -44,6 +44,7 @@ const (
 	TRUSTTUNNEL
 	SHADOWQUIC
 	INNER
+	EBPF
 )
 
 type AddrType byte
@@ -126,6 +127,8 @@ func (t Type) String() string {
 		return "ShadowQuic"
 	case INNER:
 		return "Inner"
+	case EBPF:
+		return "EBPF"
 	default:
 		return "Unknown"
 	}
@@ -176,6 +179,8 @@ func ParseType(t string) (*Type, error) {
 		res = SHADOWQUIC
 	case "INNER":
 		res = INNER
+	case "EBPF":
+		res = EBPF
 	default:
 		return nil, fmt.Errorf("unknown type: %s", t)
 	}
@@ -188,32 +193,32 @@ func (t Type) MarshalJSON() ([]byte, error) {
 
 // Metadata is used to store connection address
 type Metadata struct {
-	NetWork      NetWork    `json:"network"`
-	Type         Type       `json:"type"`
-	SrcIP        netip.Addr `json:"sourceIP"`
-	DstIP        netip.Addr `json:"destinationIP"`
-	SrcGeoIP     []string   `json:"sourceGeoIP"`      // can be nil if never queried, empty slice if got no result
-	DstGeoIP     []string   `json:"destinationGeoIP"` // can be nil if never queried, empty slice if got no result
-	SrcIPASN     string     `json:"sourceIPASN"`
-	DstIPASN     string     `json:"destinationIPASN"`
-	SrcPort      uint16     `json:"sourcePort,string"`      // `,string` is used to compatible with old version json output
-	DstPort      uint16     `json:"destinationPort,string"` // `,string` is used to compatible with old version json output
-	InIP         netip.Addr `json:"inboundIP"`
-	InPort       uint16     `json:"inboundPort,string"` // `,string` is used to compatible with old version json output
-	InName       string     `json:"inboundName"`
-	InUser       string     `json:"inboundUser"`
-	RematchName  string     `json:"rematchName"`
-	Host         string     `json:"host"`
-	DNSMode      DNSMode    `json:"dnsMode"`
-	Uid          uint32     `json:"uid"`
-	Process      string     `json:"process"`
-	ProcessPath  string     `json:"processPath"`
-	SpecialProxy string     `json:"specialProxy"`
-	SpecialRules string     `json:"specialRules"`
-	RemoteDst    string     `json:"remoteDestination"`
-	DSCP         uint8      `json:"dscp"`
-	UUID           string     `json:"id,omitempty"` // ID is used to identify the connection for smart
-	SmartBlock     string     `json:"smartBlock"`   // SmartBlock indicates if the node selected by smart group should be blocked for this connection
+	NetWork        NetWork    `json:"network"`
+	Type           Type       `json:"type"`
+	SrcIP          netip.Addr `json:"sourceIP"`
+	DstIP          netip.Addr `json:"destinationIP"`
+	SrcGeoIP       []string   `json:"sourceGeoIP"`      // can be nil if never queried, empty slice if got no result
+	DstGeoIP       []string   `json:"destinationGeoIP"` // can be nil if never queried, empty slice if got no result
+	SrcIPASN       string     `json:"sourceIPASN"`
+	DstIPASN       string     `json:"destinationIPASN"`
+	SrcPort        uint16     `json:"sourcePort,string"`      // `,string` is used to compatible with old version json output
+	DstPort        uint16     `json:"destinationPort,string"` // `,string` is used to compatible with old version json output
+	InIP           netip.Addr `json:"inboundIP"`
+	InPort         uint16     `json:"inboundPort,string"` // `,string` is used to compatible with old version json output
+	InName         string     `json:"inboundName"`
+	InUser         string     `json:"inboundUser"`
+	RematchName    string     `json:"rematchName"`
+	Host           string     `json:"host"`
+	DNSMode        DNSMode    `json:"dnsMode"`
+	Uid            uint32     `json:"uid"`
+	Process        string     `json:"process"`
+	ProcessPath    string     `json:"processPath"`
+	SpecialProxy   string     `json:"specialProxy"`
+	SpecialRules   string     `json:"specialRules"`
+	RemoteDst      string     `json:"remoteDestination"`
+	DSCP           uint8      `json:"dscp"`
+	UUID           string     `json:"id,omitempty"`   // ID is used to identify the connection for smart
+	SmartBlock     string     `json:"smartBlock"`     // SmartBlock indicates if the node selected by smart group should be blocked for this connection
 	SmartTarget    string     `json:"smartTarget"`    // SmartTarget indicates the target domain/ip for smart group node selection
 	WildcardTarget string     `json:"wildcardTarget"` // WildcardTarget caches GetEffectiveTarget result
 
