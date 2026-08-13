@@ -75,3 +75,16 @@ The initial port was validated on 2026-08-13 with Go 1.26.0:
 - The Linux/Android cgo backend, BPF object generation, kernel verifier, and
   privileged traffic tests remain the responsibility of the Linux CI workflow;
   they cannot run in the Windows development environment used for this port.
+
+The combined repository was then validated by GitHub Actions run
+[`31680555204`](https://github.com/mingxitang/mihomo_epbf_smart/actions/runs/31680555204)
+on 2026-08-13. The full test suite, `go vet`, BPF object generation/checks,
+tagged eBPF package tests, and cross-platform compile checks passed. The run
+also produced verified eBPF binaries for Linux AMD64 v3, Linux ARM64, and
+Android ARM64. The hosted-runner capability probe passed, but the privileged
+traffic test itself was skipped because the runner did not expose the required
+kernel/cgroup capabilities.
+
+Downloaded artifacts are stored under the ignored local directory
+`output/github-actions-31680555204/`; their SHA-256 digests match the checksum
+files emitted by the workflow.
