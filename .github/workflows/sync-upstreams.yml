@@ -1,0 +1,227 @@
+name: Sync Smart and eBPF upstreams
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+
+concurrency:
+  group: sync-smart-ebpf-upstreams
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+
+env:
+  SMART_REPO: vernesong/mihomo
+  SMART_BRANCH: Alpha
+  SMART_RELEASE_TAG: Prerelease-Alpha
+  EBPF_REPO: TanakaLun/mihomo
+  EBPF_BRANCH: ebpf-inbound
+  STATE_FILE: .github/upstream-state.json
+  BUILD_WORKFLOW: build-ebpf.yml
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: Alpha
+
+      - name: Detect released upstream changes
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add smart "https://github.com/${SMART_REPO}.git"
+          git remote add ebpf "https://github.com/${EBPF_REPO}.git"
+          git fetch --no-tags smart \
+            "+refs/heads/${SMART_BRANCH}:refs/remotes/smart/${SMART_BRANCH}"
+          git fetch --no-tags ebpf \
+            "+refs/heads/${EBPF_BRANCH}:refs/remotes/ebpf/${EBPF_BRANCH}"
+
+          smart_sha="$(git rev-parse "refs/remotes/smart/${SMART_BRANCH}")"
+          ebpf_branch_sha="$(git rev-parse "refs/remotes/ebpf/${EBPF_BRANCH}")"
+          smart_release="$(gh api \
+            "repos/${SMART_REPO}/releases/tags/${SMART_RELEASE_TAG}")"
+          ebpf_release="$(gh api "repos/${EBPF_REPO}/releases/latest")"
+          ebpf_tag="$(jq -r '.tag_name' <<<"${ebpf_release}")"
+
+          git check-ref-format "refs/tags/${ebpf_tag}"
+          git fetch --force --no-tags ebpf \
+            "refs/tags/${ebpf_tag}:refs/remotes/ebpf-release/${ebpf_tag}"
+          ebpf_sha="$(git rev-parse \
+            "refs/remotes/ebpf-release/${ebpf_tag}^{commit}")"
+          git merge-base --is-ancestor "${ebpf_sha}" "${ebpf_branch_sha}" ||
+            { echo "Latest eBPF release is outside ${EBPF_BRANCH}" >&2; exit 1; }
+
+          release_marker() {
+            jq -r '[.tag_name, .updated_at,
+              ([.assets[].updated_at] | max),
+              (.assets | length | tostring)] | join("|")'
+          }
+          smart_marker="$(release_marker <<<"${smart_release}")"
+          ebpf_marker="$(release_marker <<<"${ebpf_release}")"
+          old_smart_sha="$(jq -r '.smart.commit' "${STATE_FILE}")"
+          old_smart_marker="$(jq -r '.smart.release_marker' "${STATE_FILE}")"
+          old_ebpf_sha="$(jq -r '.ebpf.commit' "${STATE_FILE}")"
+          old_ebpf_marker="$(jq -r '.ebpf.release_marker' "${STATE_FILE}")"
+
+          smart_short="${smart_sha:0:7}"
+          smart_asset_matches="$(jq --arg short "${smart_short}" \
+            '[.assets[].name | contains($short)] | any' \
+            <<<"${smart_release}")"
+          smart_ready=false
+          if [ "${smart_sha}" != "${old_smart_sha}" ] &&
+             [ "${smart_marker}" != "${old_smart_marker}" ] &&
+             [ "${smart_asset_matches}" = true ]; then
+            git merge-base --is-ancestor "${old_smart_sha}" "${smart_sha}" ||
+              { echo "Smart history diverged after ${old_smart_sha}" >&2; exit 1; }
+            smart_ready=true
+          fi
+
+          ebpf_ready=false
+          if [ "${ebpf_sha}" != "${old_ebpf_sha}" ] &&
+             [ "${ebpf_marker}" != "${old_ebpf_marker}" ]; then
+            if git merge-base --is-ancestor "${old_ebpf_sha}" "${ebpf_sha}"; then
+              ebpf_ready=true
+            elif ! git merge-base --is-ancestor "${ebpf_sha}" "${old_ebpf_sha}"; then
+              echo "eBPF release history diverged after ${old_ebpf_sha}" >&2
+              exit 1
+            fi
+          fi
+
+          changed=false
+          if [ "${smart_ready}" = true ] || [ "${ebpf_ready}" = true ]; then
+            changed=true
+          fi
+          {
+            echo "changed=${changed}"
+            echo "smart_ready=${smart_ready}"
+            echo "smart_sha=${smart_sha}"
+            echo "smart_marker=${smart_marker}"
+            echo "ebpf_ready=${ebpf_ready}"
+            echo "ebpf_sha=${ebpf_sha}"
+            echo "ebpf_tag=${ebpf_tag}"
+            echo "ebpf_marker=${ebpf_marker}"
+          } >>"${GITHUB_OUTPUT}"
+          {
+            echo "## Upstream detection"
+            echo
+            echo "| Upstream | Integrated | Candidate | Release ready |"
+            echo "| --- | --- | --- | --- |"
+            echo "| Smart | ${old_smart_sha} | ${smart_sha} | ${smart_ready} |"
+            echo "| eBPF | ${old_ebpf_sha} | ${ebpf_sha} | ${ebpf_ready} |"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Merge released changes
+        if: steps.detect.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ "${{ steps.detect.outputs.smart_ready }}" = true ]; then
+            git merge --no-edit --no-ff "${{ steps.detect.outputs.smart_sha }}"
+            jq --arg commit "${{ steps.detect.outputs.smart_sha }}" \
+              --arg marker "${{ steps.detect.outputs.smart_marker }}" \
+              '.smart.commit = $commit | .smart.release_marker = $marker' \
+              "${STATE_FILE}" >"${STATE_FILE}.tmp"
+            mv "${STATE_FILE}.tmp" "${STATE_FILE}"
+          fi
+
+          if [ "${{ steps.detect.outputs.ebpf_ready }}" = true ]; then
+            old_ebpf_sha="$(jq -r '.ebpf.commit' "${STATE_FILE}")"
+            if ! git merge-base --is-ancestor "${old_ebpf_sha}" HEAD; then
+              git merge --strategy=ours --no-edit \
+                -m "chore: mark integrated eBPF snapshot ${old_ebpf_sha}" \
+                "${old_ebpf_sha}"
+            fi
+            git merge --no-edit --no-ff "${{ steps.detect.outputs.ebpf_sha }}"
+            jq --arg commit "${{ steps.detect.outputs.ebpf_sha }}" \
+              --arg tag "${{ steps.detect.outputs.ebpf_tag }}" \
+              --arg marker "${{ steps.detect.outputs.ebpf_marker }}" \
+              '.ebpf.commit = $commit | .ebpf.release_tag = $tag |
+               .ebpf.release_marker = $marker' \
+              "${STATE_FILE}" >"${STATE_FILE}.tmp"
+            mv "${STATE_FILE}.tmp" "${STATE_FILE}"
+          fi
+          git add "${STATE_FILE}"
+          git commit -m "chore: record synchronized upstream releases"
+
+      - name: Push synchronized Alpha
+        id: push
+        if: steps.detect.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:Alpha
+          echo "commit=$(git rev-parse HEAD)" >>"${GITHUB_OUTPUT}"
+
+      - name: Trigger eBPF build
+        if: steps.push.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/${BUILD_WORKFLOW}/dispatches" \
+            -f ref=Alpha
+          echo "Synchronized ${{ steps.push.outputs.commit }} and dispatched the eBPF build." \
+            >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Report integration failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMART_SHA: ${{ steps.detect.outputs.smart_sha }}
+          EBPF_SHA: ${{ steps.detect.outputs.ebpf_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="[automation] Smart/eBPF upstream synchronization failed"
+          conflicts="$(git diff --name-only --diff-filter=U || true)"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body_file="${RUNNER_TEMP}/upstream-sync-failure.md"
+          {
+            echo "Automatic upstream integration failed."
+            echo
+            echo "- Smart candidate: ${SMART_SHA}"
+            echo "- eBPF candidate: ${EBPF_SHA}"
+            echo "- Workflow run: ${run_url}"
+            echo
+            echo "Conflicting files:"
+            if [ -n "${conflicts}" ]; then echo "${conflicts}"; else
+              echo "(no unmerged files; inspect the failed step log)"
+            fi
+          } >"${body_file}"
+          existing="$(gh issue list --repo "${GITHUB_REPOSITORY}" \
+            --search "\"${title}\" in:title" --state open \
+            --json number --jq '.[0].number' || true)"
+          if [ -n "${existing}" ]; then
+            gh issue edit "${existing}" --repo "${GITHUB_REPOSITORY}" \
+              --body-file "${body_file}"
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "${title}" --body-file "${body_file}"
+          fi
+
+      - name: Close stale failure issue
+        if: steps.push.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="[automation] Smart/eBPF upstream synchronization failed"
+          for issue in $(gh issue list --repo "${GITHUB_REPOSITORY}" \
+            --search "\"${title}\" in:title" --state open \
+            --json number --jq '.[].number'); do
+            gh issue close "${issue}" --repo "${GITHUB_REPOSITORY}" \
+              --reason completed
+          done

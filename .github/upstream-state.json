@@ -1,0 +1,16 @@
+{
+  "smart": {
+    "repository": "vernesong/mihomo",
+    "branch": "Alpha",
+    "commit": "2e80ed75289c43da119c8f1fc8d022d0cdbc7f07",
+    "release_tag": "Prerelease-Alpha",
+    "release_marker": "Prerelease-Alpha|2026-08-10T14:48:08Z|2026-08-10T14:48:08Z|128"
+  },
+  "ebpf": {
+    "repository": "TanakaLun/mihomo",
+    "branch": "ebpf-inbound",
+    "commit": "19c7a3be80d366761511babcb3b5fa6fe9ebd8ff",
+    "release_tag": "v1.19.22-ebpf.2",
+    "release_marker": "v1.19.22-ebpf.2|2026-08-09T16:36:48Z|2026-08-09T16:30:36Z|7"
+  }
+}
