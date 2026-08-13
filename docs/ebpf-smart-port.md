@@ -5,6 +5,10 @@ This branch combines the Smart policy-group implementation from
 The maintained combined source is published at
 `https://github.com/mingxitang/mihomo_epbf_smart` on the `Alpha` branch.
 
+For the complete Chinese maintenance workflow, build instructions, and
+incident troubleshooting guide, see
+[`ebpf-smart-development-guide.zh-CN.md`](ebpf-smart-development-guide.zh-CN.md).
+
 ## Pinned baselines
 
 - Smart target: `vernesong/mihomo` `Alpha` at `2e80ed75`.
