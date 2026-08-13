@@ -115,6 +115,27 @@ ARM64, and Android ARM64 artifacts from commit `f4d64eee`; downloaded copies
 and their matching SHA-256 files are stored under the ignored local directory
 `output/github-actions-31689935993/`.
 
+### UDP timeout unit correction
+
+The follow-up diagnosis found that the listener converted the integer
+`udp-timeout` option directly to `time.Duration`. Configuration values use
+seconds, so `udp-timeout: 300` became 300 nanoseconds. The userspace sweep was
+clamped to every five seconds while the BPF flow timeout rounded up to one
+second, which could still remove a DNS binding before a response was written.
+
+The listener now multiplies configured values by one second, validates negative
+and overflowing values, and reports the effective duration in its attachment
+log. With `udp-timeout: 300`, verify that startup reports
+`udp_timeout=5m0s`.
+
+The correction was validated by GitHub Actions run
+[`31692972462`](https://github.com/mingxitang/mihomo_epbf_smart/actions/runs/31692972462)
+on 2026-08-13. Full tests, the timeout conversion regression test, tagged eBPF
+tests, BPF generation/checks, cross-platform checks, and all three artifact
+builds passed for commit `7fbcbd87`. Downloaded artifacts and matching SHA-256
+files are stored under the ignored local directory
+`output/github-actions-31692972462/`.
+
 ## Automatic upstream synchronization
 
 `.github/workflows/sync-upstreams.yml` checks both source forks every six

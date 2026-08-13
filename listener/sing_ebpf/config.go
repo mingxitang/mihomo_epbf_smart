@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	ECommon "github.com/metacubex/mihomo/common/ebpf"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -24,6 +25,20 @@ const (
 )
 
 var defaultRedirectIPv4Prefix = netip.MustParsePrefix("127.128.0.0/9")
+
+func normalizeUDPTimeout(seconds int64) (time.Duration, error) {
+	if seconds == 0 {
+		seconds = 300
+	}
+	if seconds < 0 {
+		return 0, E.New("eBPF udp_timeout must be greater than zero")
+	}
+	const maxDurationSeconds = int64(1<<63-1) / int64(time.Second)
+	if seconds > maxDurationSeconds {
+		return 0, E.New("eBPF udp_timeout is too large: ", seconds)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
 
 func normalizeDNSMode(mode string) (string, error) {
 	switch mode {

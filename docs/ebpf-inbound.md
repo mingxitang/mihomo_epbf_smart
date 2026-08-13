@@ -100,7 +100,9 @@ Field behavior:
   is IPv4 `127.128.0.0/9` with IPv6 disabled.
 - `dns-mode`: `hijack` or `off`. Defaults to `hijack`.
 - `cgroup-ipv6-mode`: `always`, `auto`, or `off`. Defaults to `always`.
-- `udp-timeout`: UDP NAT mapping timeout in seconds. Defaults to 300.
+- `udp-timeout`: UDP NAT mapping timeout in seconds. Defaults to 300. The
+  startup log prints the normalized duration as `udp_timeout=5m0s` for a value
+  of `300`.
 - `map-capacity`: maximum entries for the redirect and bypass maps. Values are
   capped at `1 << 20`; zero uses the built-in default.
 - `bypass-rule-set`: rule provider tags whose CIDRs populate the bypass map.
@@ -171,6 +173,12 @@ listener port, DNS mode, programs, and bypass CIDR counts.
   processes the queued response and the normal `udp-timeout` cleanup runs.
   `dns-mode: hijack` can remain enabled. Restart mihomo after upgrading so all
   eBPF programs and maps are recreated from the new build.
+- If the startup line prints a duration much shorter than the configured
+  `udp-timeout`, the binary predates the timeout-unit fix. Earlier combined
+  builds interpreted a configured integer as nanoseconds; `udp-timeout: 300`
+  therefore caused userspace cleanup every five seconds and configured the BPF
+  flow timeout as one second. Upgrade and confirm the startup line contains
+  `udp_timeout=5m0s`.
 
 ## Shutdown and cleanup
 
