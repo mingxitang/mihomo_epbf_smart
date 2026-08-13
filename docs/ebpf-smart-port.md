@@ -107,6 +107,14 @@ cleanup, connected DNS cleanup, and unchanged connected non-DNS cleanup. After
 installing a fixed binary, restart mihomo and restore `dns-mode: hijack`; no
 other configuration change is required.
 
+The fix was validated by GitHub Actions run
+[`31689935993`](https://github.com/mingxitang/mihomo_epbf_smart/actions/runs/31689935993)
+on 2026-08-13. Full tests, tagged eBPF tests, BPF object generation/checks, and
+cross-platform compile checks passed. The run produced Linux AMD64 v3, Linux
+ARM64, and Android ARM64 artifacts from commit `f4d64eee`; downloaded copies
+and their matching SHA-256 files are stored under the ignored local directory
+`output/github-actions-31689935993/`.
+
 ## Automatic upstream synchronization
 
 `.github/workflows/sync-upstreams.yml` checks both source forks every six
