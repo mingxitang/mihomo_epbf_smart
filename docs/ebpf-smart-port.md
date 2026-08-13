@@ -89,6 +89,24 @@ Downloaded artifacts are stored under the ignored local directory
 `output/github-actions-31680555204/`; their SHA-256 digests match the checksum
 files emitted by the workflow.
 
+## UDP DNS binding lifetime fix
+
+The combined branch fixes two races that could make `dns-mode: hijack` fail
+while `dns-mode: off` continued to work:
+
+- cached UDP packets now refresh the client activity timestamp, and the idle
+  sweeper rechecks it under the table lock before deleting the client;
+- the cgroup socket-release hook no longer deletes a connected port-53
+  original-destination entry before the queued DNS response reaches userspace.
+  Userspace retains that DNS entry and releases it through the configured
+  `udp-timeout`. Connected non-DNS UDP entries keep the original immediate
+  kernel cleanup behavior.
+
+Regression tests cover activity refresh, the sweep recheck, ordinary idle
+cleanup, connected DNS cleanup, and unchanged connected non-DNS cleanup. After
+installing a fixed binary, restart mihomo and restore `dns-mode: hijack`; no
+other configuration change is required.
+
 ## Automatic upstream synchronization
 
 `.github/workflows/sync-upstreams.yml` checks both source forks every six

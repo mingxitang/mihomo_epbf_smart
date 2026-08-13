@@ -164,6 +164,13 @@ listener port, DNS mode, programs, and bypass CIDR counts.
   across the enabled protocol/family listeners. Startup rolls back all
   listeners if any bind fails; check `ss -lntup` for the reported port.
 - `cgroup_path` errors: the path must be absolute and inside the cgroup2 mount.
+- `missing UDP DNS binding` or `lookup UDP original destination: ... no such
+  file or directory`: use a build containing the connected-DNS lifetime fix.
+  Active cached UDP state is refreshed for every packet, and a short-lived
+  connected DNS socket keeps its original-destination entry until userspace
+  processes the queued response and the normal `udp-timeout` cleanup runs.
+  `dns-mode: hijack` can remain enabled. Restart mihomo after upgrading so all
+  eBPF programs and maps are recreated from the new build.
 
 ## Shutdown and cleanup
 

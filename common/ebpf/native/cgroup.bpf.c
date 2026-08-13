@@ -732,7 +732,13 @@ INLINE int release_socket(struct bpf_sock *ctx, bool delete_bypass) {
     if (cookie == 0U) return 1;
     struct sb_ebpf_listener_key *listener = map_lookup(&cgroup_udp_token, &cookie);
     if (listener != 0) {
-        map_delete(&cgroup_udp_redirect, listener);
+        struct sb_ebpf_original_dst *original = map_lookup(&cgroup_udp_redirect, listener);
+        // A short-lived connected DNS socket may be released after its response
+        // is queued but before userspace resolves the listener token. Keep that
+        // mapping until the UDP client table releases it after the idle timeout.
+        if (original == 0 || original->port != 53U) {
+            map_delete(&cgroup_udp_redirect, listener);
+        }
         map_delete(&cgroup_udp_token, &cookie);
     }
     map_delete(&cgroup_udp_peer, &(__u64){cookie});

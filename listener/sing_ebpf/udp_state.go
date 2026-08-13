@@ -30,11 +30,12 @@ type udpClientState struct {
 }
 
 type udpRedirectBinding struct {
-	address    netip.Addr
-	packetInfo []byte
-	connected  bool
-	reference  udpRedirectReference
-	sharedFlow *ECommon.SharedNetworkFlowHandle
+	address         netip.Addr
+	packetInfo      []byte
+	connected       bool
+	managedRedirect bool
+	reference       udpRedirectReference
+	sharedFlow      *ECommon.SharedNetworkFlowHandle
 }
 
 type udpRedirectReference struct {
@@ -84,14 +85,6 @@ func (t *udpClientTable) loadOrCreateLocked(client netip.AddrPort) *udpClientSta
 	return clientState
 }
 
-func (t *udpClientTable) touch(client netip.AddrPort, now time.Time) {
-	if clientState, loaded := t.load(client); loaded {
-		clientState.access.Lock()
-		clientState.lastActive = now
-		clientState.access.Unlock()
-	}
-}
-
 func (t *udpClientTable) cachedOriginal(client netip.AddrPort, redirectAddress netip.Addr) (udpOriginalDestination, bool) {
 	original, _, loaded := t.cachedPacketState(client, redirectAddress)
 	return original, loaded
@@ -101,21 +94,29 @@ func (t *udpClientTable) cachedPacketState(
 	client netip.AddrPort,
 	redirectAddress netip.Addr,
 ) (udpOriginalDestination, bool, bool) {
-	clientState, loaded := t.load(client)
+	// Hold the table read lock until the state is marked active. This prevents
+	// the sweeper from deleting a client between locating its cached binding and
+	// refreshing lastActive.
+	t.access.RLock()
+	clientState, loaded := t.clients[client]
 	if !loaded {
+		t.access.RUnlock()
 		return udpOriginalDestination{}, false, false
 	}
-	clientState.access.RLock()
+	clientState.access.Lock()
+	clientState.lastActive = time.Now()
 	original, loaded := clientState.originals[redirectAddress]
 	if !loaded {
-		clientState.access.RUnlock()
+		clientState.access.Unlock()
+		t.access.RUnlock()
 		return udpOriginalDestination{}, false, false
 	}
 	binding, bindingLoaded := clientState.bindings[original.original.Destination]
 	bindingReady := bindingLoaded &&
 		binding.address == redirectAddress &&
 		binding.connected == original.original.ConnectedUDP
-	clientState.access.RUnlock()
+	clientState.access.Unlock()
+	t.access.RUnlock()
 	return original, bindingReady, true
 }
 
@@ -189,19 +190,20 @@ func (t *udpClientTable) setClientBinding(
 		return nil
 	}
 	clientState.bindings[destination] = udpRedirectBinding{
-		address:    redirectAddress,
-		packetInfo: sourcePacketInfo(redirectAddress),
-		connected:  connected,
-		reference:  reference,
-		sharedFlow: original.sharedFlow,
+		address:         redirectAddress,
+		packetInfo:      sourcePacketInfo(redirectAddress),
+		connected:       connected,
+		managedRedirect: !connected || destination.Port() == 53,
+		reference:       reference,
+		sharedFlow:      original.sharedFlow,
 	}
 
 	t.redirectAccess.Lock()
 	defer t.redirectAccess.Unlock()
-	if !connected {
+	if !connected || destination.Port() == 53 {
 		t.retainRedirectLocked(reference)
 	}
-	if loaded && !current.connected && t.releaseRedirectLocked(current.reference) {
+	if loaded && current.managedRedirect && t.releaseRedirectLocked(current.reference) {
 		return []udpRedirectRelease{{
 			reference:  current.reference,
 			sharedFlow: current.sharedFlow,
@@ -250,16 +252,42 @@ func (t *udpClientTable) deleteClient(client netip.AddrPort, expectedState *udpC
 	if t.clients[client] != expectedState {
 		return nil
 	}
-	delete(t.clients, client)
-
 	expectedState.access.Lock()
 	defer expectedState.access.Unlock()
+	return t.deleteClientLocked(client, expectedState)
+}
+
+func (t *udpClientTable) deleteIdleClient(
+	client netip.AddrPort,
+	expectedState *udpClientState,
+	now time.Time,
+	timeout time.Duration,
+) []udpRedirectRelease {
+	t.access.Lock()
+	defer t.access.Unlock()
+	if t.clients[client] != expectedState {
+		return nil
+	}
+	expectedState.access.Lock()
+	defer expectedState.access.Unlock()
+	// The client may have become active after sweep selected it. Recheck while
+	// holding the same table/state lock order used by packet activity updates.
+	if now.Sub(expectedState.lastActive) <= timeout {
+		return nil
+	}
+	return t.deleteClientLocked(client, expectedState)
+}
+
+// deleteClientLocked removes a client while t.access and expectedState.access
+// are both write-locked.
+func (t *udpClientTable) deleteClientLocked(client netip.AddrPort, expectedState *udpClientState) []udpRedirectRelease {
+	delete(t.clients, client)
 	t.redirectAccess.Lock()
 	defer t.redirectAccess.Unlock()
 	var released []udpRedirectRelease
 	for bindingKey := range expectedState.bindings {
 		binding := expectedState.bindings[bindingKey]
-		if !binding.connected && t.releaseRedirectLocked(binding.reference) {
+		if binding.managedRedirect && t.releaseRedirectLocked(binding.reference) {
 			released = append(released, udpRedirectRelease{
 				reference:  binding.reference,
 				sharedFlow: binding.sharedFlow,
@@ -293,7 +321,7 @@ func (t *udpClientTable) sweep(now time.Time, timeout time.Duration, release fun
 		if !loaded {
 			continue
 		}
-		releases := t.deleteClient(client, clientState)
+		releases := t.deleteIdleClient(client, clientState, now, timeout)
 		release(releases)
 	}
 }
