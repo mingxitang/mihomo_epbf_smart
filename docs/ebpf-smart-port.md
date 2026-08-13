@@ -116,3 +116,8 @@ not an ancestor of this repository. On the first future eBPF release, the
 workflow records that already-integrated snapshot with an `ours` merge before
 merging only the newer released commits. Subsequent updates use ordinary
 ancestry-based merges.
+
+The installed workflow was manually validated by GitHub Actions run
+[`31684389383`](https://github.com/mingxitang/mihomo_epbf_smart/actions/runs/31684389383).
+With both recorded baselines current, detection succeeded while merge, push,
+and build dispatch were correctly skipped.
