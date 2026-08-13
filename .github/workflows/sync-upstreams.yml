@@ -3,7 +3,8 @@ name: Sync Smart and eBPF upstreams
 on:
   workflow_dispatch:
   schedule:
-    - cron: "23 */6 * * *"
+    # GitHub cron is calendar based: run at 00:23 UTC every third day.
+    - cron: "23 0 */3 * *"
 
 concurrency:
   group: sync-smart-ebpf-upstreams

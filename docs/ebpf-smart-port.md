@@ -142,9 +142,9 @@ files are stored under the ignored local directory
 
 ## Automatic upstream synchronization
 
-`.github/workflows/sync-upstreams.yml` checks both source forks every six
-hours and can also be run manually. It uses `.github/upstream-state.json` as
-the last successfully integrated baseline.
+`.github/workflows/sync-upstreams.yml` checks both source forks every 72 hours
+(00:23 UTC every third calendar day) and can also be run manually. It uses
+`.github/upstream-state.json` as the last successfully integrated baseline.
 
 An upstream is synchronized only after both its source and its release output
 show a material update:

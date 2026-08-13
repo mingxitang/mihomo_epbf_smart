@@ -282,7 +282,7 @@ sha256sum -c mihomo-ebpf-linux-amd64.sha256
 - `.github/workflows/sync-upstreams.yml`；
 - `.github/upstream-state.json`。
 
-工作流每 6 小时检查一次，也支持手动执行。它不会看到分支有任意提交就立即合并，而是要求源码和 release 都显示实质更新：
+工作流每 72 小时（GitHub cron 按日历每 3 天的 00:23 UTC）检查一次，也支持手动执行。它不会看到分支有任意提交就立即合并，而是要求源码和 release 都显示实质更新：
 
 - Smart：`Alpha` 前进，滚动 release `Prerelease-Alpha` 的 marker 改变，并且 release asset 名含新提交的 7 位短 SHA；
 - eBPF：最新 release 改变，其 tag 必须指向 `ebpf-inbound` 中的新提交；
