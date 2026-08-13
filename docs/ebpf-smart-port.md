@@ -128,6 +128,14 @@ and overflowing values, and reports the effective duration in its attachment
 log. With `udp-timeout: 300`, verify that startup reports
 `udp_timeout=5m0s`.
 
+The correction was validated by GitHub Actions run
+[`31692972462`](https://github.com/mingxitang/mihomo_epbf_smart/actions/runs/31692972462)
+on 2026-08-13. Full tests, the timeout conversion regression test, tagged eBPF
+tests, BPF generation/checks, cross-platform checks, and all three artifact
+builds passed for commit `7fbcbd87`. Downloaded artifacts and matching SHA-256
+files are stored under the ignored local directory
+`output/github-actions-31692972462/`.
+
 ## Automatic upstream synchronization
 
 `.github/workflows/sync-upstreams.yml` checks both source forks every six
