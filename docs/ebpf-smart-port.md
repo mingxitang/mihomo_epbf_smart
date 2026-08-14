@@ -93,6 +93,16 @@ Downloaded artifacts are stored under the ignored local directory
 `output/github-actions-31680555204/`; their SHA-256 digests match the checksum
 files emitted by the workflow.
 
+### Go 1.20 compatibility
+
+The initial eBPF port used the standard-library `slices` package while this
+repository still declares Go 1.20 and intentionally builds compatibility
+artifacts with that version. Since `slices` entered the standard library in Go
+1.21, the ordinary Build/Test matrix failed on every Go 1.20 runner even though
+the dedicated Go 1.26 eBPF workflow passed. Shared-network host-prefix sorting
+now uses `sort.Slice`, preserving the same ordering while restoring Go 1.20
+compilation.
+
 ## UDP DNS binding lifetime fix
 
 The combined branch fixes two races that could make `dns-mode: hijack` fail
@@ -172,3 +182,19 @@ The installed workflow was manually validated by GitHub Actions run
 [`31684389383`](https://github.com/mingxitang/mihomo_epbf_smart/actions/runs/31684389383).
 With both recorded baselines current, detection succeeded while merge, push,
 and build dispatch were correctly skipped.
+
+## Automatic release publishing
+
+`.github/workflows/release-ebpf.yml` runs after a successful
+`Build eBPF branch` workflow on `Alpha`. It validates the source workflow run,
+downloads the Linux AMD64 v3, Linux ARM64, and Android ARM64 artifacts, verifies
+their build-time SHA-256 files, and publishes the binaries and fresh checksum
+files as a GitHub prerelease. `BUILD_INFO.txt` records the source run, commit,
+timestamp, and URL.
+
+Tags include the UTC build date, Actions run ID, and the first twelve commit
+characters, so every successful build has a traceable release. Re-running the
+publisher for the same build is idempotent. A manual dispatch accepts a build
+run ID for recovery, but rejects failed runs, other workflows, and non-`Alpha`
+builds. It uses the repository `GITHUB_TOKEN` with only `actions: read` and
+`contents: write`; no personal token is required.
