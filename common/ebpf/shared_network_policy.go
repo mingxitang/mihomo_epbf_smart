@@ -2,7 +2,7 @@ package ebpf
 
 import (
 	"net/netip"
-	"slices"
+	"sort"
 )
 
 func compileSharedHostPrefixes(addresses []netip.Addr) ([]netip.Prefix, []netip.Prefix) {
@@ -25,11 +25,11 @@ func compileSharedHostPrefixes(addresses []netip.Addr) ([]netip.Prefix, []netip.
 	for prefix := range ipv6Set {
 		ipv6 = append(ipv6, prefix)
 	}
-	slices.SortFunc(ipv4, func(left, right netip.Prefix) int {
-		return left.Addr().Compare(right.Addr())
+	sort.Slice(ipv4, func(left, right int) bool {
+		return ipv4[left].Addr().Compare(ipv4[right].Addr()) < 0
 	})
-	slices.SortFunc(ipv6, func(left, right netip.Prefix) int {
-		return left.Addr().Compare(right.Addr())
+	sort.Slice(ipv6, func(left, right int) bool {
+		return ipv6[left].Addr().Compare(ipv6[right].Addr()) < 0
 	})
 	return ipv4, ipv6
 }

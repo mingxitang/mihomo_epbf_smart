@@ -93,6 +93,16 @@ Downloaded artifacts are stored under the ignored local directory
 `output/github-actions-31680555204/`; their SHA-256 digests match the checksum
 files emitted by the workflow.
 
+### Go 1.20 compatibility
+
+The initial eBPF port used the standard-library `slices` package while this
+repository still declares Go 1.20 and intentionally builds compatibility
+artifacts with that version. Since `slices` entered the standard library in Go
+1.21, the ordinary Build/Test matrix failed on every Go 1.20 runner even though
+the dedicated Go 1.26 eBPF workflow passed. Shared-network host-prefix sorting
+now uses `sort.Slice`, preserving the same ordering while restoring Go 1.20
+compilation.
+
 ## UDP DNS binding lifetime fix
 
 The combined branch fixes two races that could make `dns-mode: hijack` fail

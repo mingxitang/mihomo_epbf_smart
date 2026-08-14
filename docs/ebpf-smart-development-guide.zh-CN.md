@@ -518,6 +518,12 @@ DNS 正常返回 fake-IP 后，BPF CIDR policy 在 mihomo 之前把这个地址�
 
 这是订阅响应头为空或格式错误，和 eBPF 数据路径无直接关系。不要把所有同时出现的 warning 都归因于内核。
 
+### 8.6 Go 1.20 构建报错 `package slices is not in GOROOT`
+
+组合仓库的 `go.mod` 仍以 Go 1.20 为最低版本，通用 Build/Test 工作流也保留 Go 1.20 矩阵，用于生成可运行在较旧 Windows 和 macOS 上的兼容产物。初次 eBPF 移植中的 `common/ebpf/shared_network_policy.go` 使用了 Go 1.21 才进入标准库的 `slices`，导致所有 Go 1.20 job 在编译阶段失败，而使用 Go 1.26 的专用 eBPF 工作流仍能通过。
+
+修复方式是使用 Go 1.20 已支持的 `sort.Slice` 完成相同的 IPv4/IPv6 host prefix 排序。修改该类公共文件时，不能只验证专用 eBPF 工作流；还必须确认通用工作流支持的最低 Go 版本。
+
 ## 9. 推荐排障顺序
 
 ### 9.1 日志中完全没有目标网站
