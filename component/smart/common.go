@@ -50,6 +50,7 @@ const (
 	RecordExpiredTime       = 7 * 24 * time.Hour
 
 	HostFailureNodeTTL      = 24 * time.Hour
+	hostStatusRetryAfter    = 4 * time.Hour
 
 	AllowedWeight           = 0.4
 

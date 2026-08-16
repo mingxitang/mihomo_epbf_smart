@@ -249,6 +249,20 @@ func (s *Smart) singleDialContext(ctx context.Context, proxy C.Proxy, metadata *
 	return c, connectTime, nil
 }
 
+func (s *Smart) groupDialFailed(proxies []C.Proxy, err error) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	for _, p := range proxies {
+		t := p.Type()
+		if t == C.Direct || t == C.Compatible || t == C.Reject || t == C.Pass || t == C.RejectDrop {
+			continue
+		}
+		s.onDialFailed(t, err, s.healthCheck)
+		return
+	}
+}
+
 func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
 	getBatch := func(proxies []C.Proxy, i int) ([]C.Proxy, time.Duration) {
 		var batch []C.Proxy
@@ -309,11 +323,14 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 			} else {
 				s.store.StoreUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.WildcardTarget, []C.Proxy{p})
 				s.closeSameConnection(metadata, p.Name(), metadata.SmartTarget, asnNumber, false)
+				s.onDialSuccess()
 				return s.WrapConnWithMetric(c, p, metadata, connectTime), nil
 			}
 		}
 
 		s.store.DeleteUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.WildcardTarget)
+
+		s.groupDialFailed(proxies, finalErr)
 
 		return nil, finalErr
 	}
@@ -368,6 +385,7 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 
 			s.store.StoreUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.WildcardTarget, []C.Proxy{proxy})
 			s.closeSameConnection(metadata, proxy.Name(), metadata.SmartTarget, asnNumber, false)
+			s.onDialSuccess()
 			return s.WrapPacketConnWithMetric(pc, proxy, metadata, connectTime), nil
 		}
 
@@ -377,6 +395,8 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 	}
 
 	s.store.DeleteUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.WildcardTarget)
+
+	s.groupDialFailed(proxies, finalErr)
 
 	return nil, finalErr
 }
@@ -1466,10 +1486,8 @@ func (s *Smart) recordConnectionStats(metadata *C.Metadata, proxy C.Proxy,
 
 	switch {
 	case err != nil:
-		s.onDialFailed(proxy.Type(), err, s.healthCheck)
 		atomicRecord.Add("failure", int64(1))
 	default:
-		s.onDialSuccess()
 		atomicRecord.Add("success", int64(1))
 	}
 
@@ -1766,21 +1784,68 @@ func (s *Smart) checkHostStatus() {
 		return
 	}
 
+	type checkItem struct {
+		wildcardTarget string
+		nodeName       string
+		host           string
+	}
+
+	var items []checkItem
 	for wildcardTarget, nodeMap := range toCheck {
 		for nodeName, host := range nodeMap {
-			p, ok := proxyMap[nodeName]
-			if !ok {
-				continue
-			}
-			status, okRes, err := s.StatusTest(p, host)
-			if err == nil && okRes {
-				s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, &C.Metadata{Host: host}, nodeName, s.maxFailedTimes, s.hostFailLimit, false, true, 0)
-				log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] with HTTP Status: [%d]", s.Name(), nodeName, host, status)
-			} else if err == nil {
-				log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] still abnormal with HTTP Status: [%d]", s.Name(), nodeName, host, status)
-			}
+			items = append(items, checkItem{wildcardTarget, nodeName, host})
 		}
 	}
+
+	var toProbe []checkItem
+	for _, it := range items {
+		if rand.Float64() < 0.5 {
+			toProbe = append(toProbe, it)
+		}
+	}
+	if len(toProbe) == 0 {
+		return
+	}
+
+	jobs := make(chan checkItem)
+	var wg sync.WaitGroup
+	for i := 0; i < parallelDials; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for it := range jobs {
+				select {
+				case <-s.ctx.Done():
+					return
+				default:
+				}
+				p, ok := proxyMap[it.nodeName]
+				if !ok {
+					continue
+				}
+				status, okRes, err := s.StatusTest(p, it.host)
+				metadata := &C.Metadata{Host: it.host}
+				if err == nil && okRes {
+					s.store.UpdateHostStatus(s.Name(), s.configName, it.wildcardTarget, metadata, it.nodeName, s.maxFailedTimes, s.hostFailLimit, false, true, 0)
+					log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] with HTTP Status: [%d]", s.Name(), it.nodeName, it.host, status)
+				} else if err == nil {
+					s.store.UpdateHostStatus(s.Name(), s.configName, it.wildcardTarget, metadata, it.nodeName, s.maxFailedTimes, s.hostFailLimit, true, true, 2)
+					log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] still abnormal with HTTP Status: [%d]", s.Name(), it.nodeName, it.host, status)
+				}
+			}
+		}()
+	}
+
+sendLoop:
+	for _, it := range toProbe {
+		select {
+		case jobs <- it:
+		case <-s.ctx.Done():
+			break sendLoop
+		}
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 func (s *Smart) StatusTest(proxy C.Proxy, host string) (uint16, bool, error) {

@@ -1525,7 +1525,7 @@ func (s *Store) CheckHostStatus(group, config string) (map[string]map[string]str
 		}
 
 		for nodeName, nodeEntry := range codeSet.Nodes {
-			if nodeEntry != 0 && nodeEntry <= now {
+			if nodeEntry == 0 || nodeEntry-now > int64((HostFailureNodeTTL-hostStatusRetryAfter).Seconds()) {
 				continue
 			}
 			h, ok2 := codeSet.NodeHosts[nodeName]
