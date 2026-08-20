@@ -1,13 +1,6 @@
 name: Release successful eBPF build
 
 on:
-  workflow_run:
-    workflows:
-      - Build eBPF branch
-    types:
-      - completed
-    branches:
-      - Alpha
   workflow_dispatch:
     inputs:
       run_id:
@@ -21,9 +14,6 @@ permissions:
 
 jobs:
   release:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -34,18 +24,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
-            run_id="$(jq -r '.workflow_run.id' "${GITHUB_EVENT_PATH}")"
-          else
-            run_id="$(jq -r '.inputs.run_id' "${GITHUB_EVENT_PATH}")"
-          fi
+          run_id="$(jq -r '.inputs.run_id' "${GITHUB_EVENT_PATH}")"
 
           if ! [[ "${run_id}" =~ ^[0-9]+$ ]]; then
             echo "Invalid build run ID: ${run_id}" >&2
             exit 1
           fi
 
-          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
+          run_json=""
+          for attempt in {1..24}; do
+            run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
+            status="$(jq -r '.status // ""' <<<"${run_json}")"
+            if [ "${status}" = "completed" ]; then
+              break
+            fi
+            echo "Build run ${run_id} is ${status}; waiting for completion (${attempt}/24)."
+            sleep 5
+          done
+
+          status="$(jq -r '.status // ""' <<<"${run_json}")"
           workflow_name="$(jq -r '.name // ""' <<<"${run_json}")"
           conclusion="$(jq -r '.conclusion // ""' <<<"${run_json}")"
           head_branch="$(jq -r '.head_branch // ""' <<<"${run_json}")"
@@ -55,6 +52,10 @@ jobs:
 
           if [ "${workflow_name}" != "Build eBPF branch" ]; then
             echo "Run ${run_id} belongs to '${workflow_name}', not the eBPF build workflow" >&2
+            exit 1
+          fi
+          if [ "${status}" != "completed" ]; then
+            echo "Build run ${run_id} did not complete before the release timeout: ${status}" >&2
             exit 1
           fi
           if [ "${conclusion}" != "success" ]; then
@@ -100,9 +101,7 @@ jobs:
           set -euo pipefail
           gh run download "${BUILD_RUN_ID}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --name mihomo-ebpf-linux-amd64 \
-            --name mihomo-ebpf-linux-arm64 \
-            --name mihomo-ebpf-android-arm64 \
+            --name mihomo \
             --dir artifacts
 
       - name: Verify and prepare release assets
@@ -117,19 +116,17 @@ jobs:
           set -euo pipefail
           mkdir -p release
 
-          for platform in linux-amd64 linux-arm64 android-arm64; do
-            name="mihomo-ebpf-${platform}"
-            artifact_root="artifacts/${name}"
-            binary="${artifact_root}/dist/${name}"
-            checksum="${binary}.sha256"
+          name="mihomo"
+          artifact_root="artifacts/${name}"
+          binary="${artifact_root}/dist/${name}"
+          checksum="${binary}.sha256"
 
-            test -f "${binary}"
-            test -f "${checksum}"
-            (cd "${artifact_root}" && sha256sum -c "dist/${name}.sha256")
+          test -f "${binary}"
+          test -f "${checksum}"
+          (cd "${artifact_root}" && sha256sum -c "dist/${name}.sha256")
 
-            cp "${binary}" "release/${name}"
-            (cd release && sha256sum "${name}" > "${name}.sha256")
-          done
+          cp "${binary}" "release/${name}"
+          (cd release && sha256sum "${name}" > "${name}.sha256")
 
           {
             echo "BUILD_RUN_ID=${BUILD_RUN_ID}"
@@ -153,17 +150,17 @@ jobs:
 
           notes_file="${RUNNER_TEMP}/release-notes.md"
           {
-            echo "Automated eBPF Alpha build from commit \`${HEAD_SHA}\`."
+            echo "Automated Android ARM64 eBPF Alpha build from commit \`${HEAD_SHA}\`."
             echo
             echo "- Build workflow: [run ${BUILD_RUN_ID}](${BUILD_URL})"
-            echo "- Platforms: Linux AMD64 v3, Linux ARM64, Android ARM64"
-            echo "- Every binary has a matching SHA-256 file."
+            echo "- Platform: Android ARM64"
+            echo "- Assets: mihomo and mihomo.sha256"
           } > "${notes_file}"
 
           gh release create "${TAG}" release/* \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${HEAD_SHA}" \
-            --title "eBPF Alpha ${TITLE_DATE} (${SHORT_SHA})" \
+            --title "Android eBPF Alpha ${TITLE_DATE} (${SHORT_SHA})" \
             --notes-file "${notes_file}" \
             --prerelease
 

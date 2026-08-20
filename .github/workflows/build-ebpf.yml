@@ -19,6 +19,7 @@ concurrency:
 
 env:
   GO_VERSION: "1.26"
+  CGO_ENABLED: "0"
 
 jobs:
   test:
@@ -40,19 +41,11 @@ jobs:
           go vet ./...
           go test ./... -count=1
 
-      - name: Install BPF build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libc6-dev linux-libc-dev
-
-      - name: Generate BPF object
-        run: make ebpf_generate
-
       - name: Test eBPF packages
         shell: bash
         run: |
           set -euo pipefail
-          CGO_ENABLED=1 go test -count=1 -tags "with_gvisor with_ebpf" ./common/ebpf/... ./listener/sing_ebpf/...
+          go test -count=1 -tags "with_gvisor with_ebpf" ./common/ebpf/... ./listener/sing_ebpf/...
 
   generate-check:
     runs-on: ubuntu-latest
@@ -64,15 +57,15 @@ jobs:
           go-download-base-url: "https://github.com/MetaCubeX/go/releases/download/build"
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Install BPF build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libc6-dev linux-libc-dev
+      - name: Set up Android NDK r29
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r29-beta1
 
-      - name: Generate BPF object
-        run: make ebpf_generate
-
-      - name: Check generated object
+      - name: Check generated BPF objects
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: make ebpf_check
 
   build:
@@ -84,11 +77,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
-            goamd64: v3
-          - goos: linux
-            goarch: arm64
           - goos: android
             goarch: arm64
     steps:
@@ -101,71 +89,9 @@ jobs:
           go-download-base-url: "https://github.com/MetaCubeX/go/releases/download/build"
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Install BPF build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libc6-dev linux-libc-dev
-
-      - name: Install Linux ARM64 cross compiler
-        if: ${{ matrix.goos == 'linux' && matrix.goarch == 'arm64' }}
-        run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Setup NDK
-        if: ${{ matrix.goos == 'android' }}
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r29-beta1
-
-      - name: Set Android NDK environment
-        if: ${{ matrix.goos == 'android' }}
-        run: |
-          NDK_PATH=${{ steps.setup-ndk.outputs.ndk-path }}
-          echo "CC=${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang" >> "$GITHUB_ENV"
-          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
-
-      - name: Set Linux environment
-        if: ${{ matrix.goos == 'linux' }}
-        run: |
-          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
-          if [ "${{ matrix.goarch }}" = "arm64" ]; then
-            echo "CC=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          fi
-
       - name: Download dependencies
         run: |
           go mod download
-
-      - name: Apply sing-tun patch (Android)
-        if: ${{ matrix.goos == 'android' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          SING_TUN_VERSION=$(go list -m github.com/metacubex/sing-tun | awk '{print $2}')
-          SING_TUN_DIR="$(go env GOMODCACHE)/github.com/metacubex/sing-tun@${SING_TUN_VERSION}"
-          echo "Sing-tun version: ${SING_TUN_VERSION}"
-          echo "Sing-tun directory: ${SING_TUN_DIR}"
-          chmod -R +w "${SING_TUN_DIR}"
-          cd "${SING_TUN_DIR}"
-          cp "$GITHUB_WORKSPACE/.github/patch/sing-tun.patch" ./sing-tun.patch
-          if grep -q "if len(r.tunOptions.Inet6Address) > 0 && runtime.GOOS == \"android\"" redirect_linux.go 2>/dev/null; then
-            echo "Patch already applied (IPv6 Android code found), skipping..."
-            exit 0
-          fi
-          if patch -p1 --reverse --dry-run < sing-tun.patch 2>/dev/null; then
-            echo "Patch already applied (reverse dry-run succeeded), skipping..."
-            exit 0
-          fi
-          if patch -p1 --dry-run < sing-tun.patch 2>&1 | grep -q "Reversed (or previously applied) patch detected"; then
-            echo "Patch already applied (dry-run detected reversal), skipping..."
-            exit 0
-          fi
-          echo "Applying patch for the first time..."
-          patch -p1 < sing-tun.patch
-
-      - name: Generate BPF object
-        run: make ebpf_generate
 
       - name: Record build metadata
         env:
@@ -193,8 +119,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          output="dist/mihomo-ebpf-${GOOS}-${GOARCH}"
-          go build -v -tags "with_gvisor with_ebpf" -trimpath \
+          output="dist/mihomo"
+          CGO_ENABLED=0 go build -v -tags "with_gvisor with_ebpf" -trimpath \
             -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${version}' \
                       -X 'github.com/metacubex/mihomo/constant.BuildTime=${build_time}' \
                       -w -s -buildid=" \
@@ -204,7 +130,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: mihomo-ebpf-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: mihomo
           path: |
             dist/*
             build/*
@@ -220,44 +146,12 @@ jobs:
           go-download-base-url: "https://github.com/MetaCubeX/go/releases/download/build"
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Install BPF build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libc6-dev linux-libc-dev
-
-      - name: Probe eBPF capabilities
-        id: probe
-        shell: bash
-        run: |
-          set +e
-          sudo apt-get install -y bpftool >/dev/null 2>&1 || true
-          bash common/ebpf/check-kernel.sh --mode local > /tmp/ebpf-probe.log 2>&1
-          probe_status=$?
-          set -e
-          cat /tmp/ebpf-probe.log
-          if [ "${probe_status}" -ne 0 ] || grep -Eq '^(FAIL|UNKNOWN) .*\[required' /tmp/ebpf-probe.log; then
-            echo "SKIP: runner cannot prove the required eBPF capabilities"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skipped=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Run privileged eBPF integration tests
-        if: steps.probe.outputs.skipped == 'false'
         shell: bash
         run: |
           set -euo pipefail
           go mod download
-          make ebpf_generate
-          sudo -E env SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=1 GOCACHE=/tmp/gocache go test -count=1 -tags "with_gvisor with_ebpf ebpf_integration" ./common/ebpf/... -run 'Integration'
-
-      - name: Copy probe log
-        run: cp /tmp/ebpf-probe.log ebpf-probe.log
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ebpf-privileged-probe
-          path: ebpf-probe.log
+          sudo -E env SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=0 GOCACHE=/tmp/gocache go test -count=1 -tags "with_gvisor with_ebpf ebpf_integration" ./common/ebpf/... -run 'Integration'
 
   cross-platform:
     runs-on: ubuntu-latest
@@ -276,3 +170,29 @@ jobs:
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags with_gvisor -trimpath -o mihomo-windows-amd64.exe .
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -tags with_gvisor -trimpath -o mihomo-darwin-arm64 .
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags with_gvisor -trimpath -o mihomo-linux-noebpf .
+
+  dispatch-release:
+    if: ${{ github.ref == 'refs/heads/Alpha' }}
+    needs:
+      - test
+      - generate-check
+      - build
+      - privileged-integration
+      - cross-platform
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch eBPF release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run release-ebpf.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref Alpha \
+            -f run_id="${GITHUB_RUN_ID}"
+          echo "Dispatched the eBPF release for build run ${GITHUB_RUN_ID}." \
+            >> "${GITHUB_STEP_SUMMARY}"

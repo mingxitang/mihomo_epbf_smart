@@ -2,6 +2,12 @@ name: Sync Smart and eBPF upstreams
 
 on:
   workflow_dispatch:
+    inputs:
+      force_build:
+        description: Build and publish Android ARM64 even when upstream is unchanged
+        required: true
+        default: true
+        type: boolean
   schedule:
     # GitHub cron is calendar based: run at 00:23 UTC every third day.
     - cron: "23 0 */3 * *"
@@ -167,15 +173,23 @@ jobs:
           git push origin HEAD:Alpha
           echo "commit=$(git rev-parse HEAD)" >>"${GITHUB_OUTPUT}"
 
-      - name: Trigger eBPF build
-        if: steps.push.outcome == 'success'
+      - name: Trigger Android build and release
+        if: >-
+          ${{ steps.push.outcome == 'success' ||
+              (github.event_name == 'workflow_dispatch' && inputs.force_build) }}
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
+          source_commit="${{ steps.push.outputs.commit }}"
+          if [ -z "${source_commit}" ]; then
+            source_commit="$(git rev-parse HEAD)"
+          fi
           gh api --method POST \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/${BUILD_WORKFLOW}/dispatches" \
             -f ref=Alpha
-          echo "Synchronized ${{ steps.push.outputs.commit }} and dispatched the eBPF build." \
+          echo "Dispatched the Android build and release pipeline for ${source_commit}." \
             >>"${GITHUB_STEP_SUMMARY}"
 
       - name: Report integration failure

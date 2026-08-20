@@ -1,155 +1,122 @@
-# eBPF inbound backend
+# sing-box eBPF inbound backend
 
-This package implements the native eBPF backend used by the sing-box eBPF
-inbound.
+This directory contains the native eBPF backend used by the sing-box eBPF
+inbound. It is a maintainer document; user-facing configuration and platform
+requirements live in [`docs/configuration/inbound/ebpf.md`](../../docs/configuration/inbound/ebpf.md).
 
-## Package layout
+## Responsibilities
 
-The Go implementation is grouped by data path and responsibility:
+The Go side owns object loading, map lifetime, cgroup and TC attachments, policy
+compilation, and listener integration. The native C side is the packet and
+socket data path. The runtime uses `github.com/cilium/ebpf` and has no cgo
+boundary or process-global probe.
 
-- `cgroup_abi.go`, `cgroup_policy.go`, and `cgroup_mount.go` contain portable
-  ABI, policy compilation, and cgroup discovery logic.
-- `cgroup_backend_cgo.go`, `cgroup_socket_cgo.go`, and
-  `cgroup_policy_cgo.go` manage the native cgroup runtime, socket redirect
-  maps, and live policy maps.
-- `shared_network_abi.go` and `shared_network_policy.go` contain the portable
-  TC map ABI and host-address policy compilation.
-- `shared_network_cgo.go`, `shared_network_flow_cgo.go`, and
-  `shared_network_policy_cgo.go` manage the native TC runtime, flow maps, and
-  live host-address maps.
-- `backend_cgo.go` contains memlock, capability-probe, and load-error helpers
-  shared by the cgroup and TC backends.
-- `map.go` contains the small BPF map syscall boundary shared by both data
-  paths. Files ending in `_stub.go` preserve the same API when cgo is disabled.
+| Area | Files | Responsibility |
+|------|-------|----------------|
+| cgroup path | `cgroup_*.go`, `redirect_address*.go` | Local socket hooks, redirect maps, UID policy, cgroup discovery, and original-destination state |
+| shared path | `shared_network_*.go` | TC links, interface lifecycle, source/MAC policy, flow state, and host-address bypass maps |
+| common runtime | `loader.go`, `backend_runtime.go`, `map.go`, `kernel_*.go` | cilium object loading, direct map syscalls, feature probes, memlock, and `tools ebpf status` |
+| native data path | `native/cgroup.bpf.c`, `native/shared_network.bpf.c`, `native/*.h` | Verifier-friendly socket and packet programs plus explicit map ABI |
+| generated objects | `internal/bpfgen/` | `bpf2go` bindings, endian-specific BPF objects, and the generation manifest |
 
-## Native layout
+The native sources are intentionally split into policy, packet parsing, flow,
+and checksum helpers, but are compiled as one verifier-visible translation unit
+per entry point. Shared ingress and egress have separate entry points so each
+loaded program remains below the Linux 4.19 4096-instruction limit.
 
-The Go and `cgo_*.c` files in this directory form the cgo boundary. cgo only
-compiles C files located directly in the package directory, so the wrappers
-include implementation files from `native/`:
+## Generated objects
 
-- `native/cgroup.c` contains the shared cgroup definitions and includes the
-  program and runtime implementation in one cgo translation unit.
-- `native/cgroup.bpf.c` and `native/shared_network.bpf.c` are compiled to the
-  embedded cgroup and TC ingress/egress objects.
-- `native/cgroup_loader.c` selects cgroup object sections, loads them, and
-  retains the TGID to socket-cookie compatibility fallback.
-- `native/cgroup_runtime.c` creates the cgroup maps and manages prepare,
-  attach, and close operations.
-- `native/object_loader.c` validates, relocates, and loads both objects without
-  libbpf. Backend-specific map and program tables live in
-  `native/cgroup_loader.c` and `native/shared_network_loader.c`.
-- `native/shared_network_runtime.c` creates and manages the shared-network
-  maps and programs.
-- `native/bpf.c` contains the BPF syscall, loader, attach, and cleanup
-  helpers.
-- `native/abi.h` contains only the cgroup map ABI shared by userspace and BPF
-  C. `native/runtime.h` is the private userspace runtime API shared with Go.
+`internal/bpfgen/*_bpf{el,eb}.o` and their Go bindings are checked in. They are
+architecture-neutral BPF bytecode, not Android or host-native objects. Both byte
+orders are shipped so a big-endian OpenWrt target does not silently load a
+little-endian object. Normal builds consume these files and do not invoke a C
+compiler:
 
-Helpers used only by one native component remain static in that component
-instead of being exposed through `native/runtime.h`.
+```sh
+CGO_ENABLED=0 TAGS=with_ebpf make build
+```
 
-## Embedded eBPF objects
-
-`native/cgroup.bpf.o` and `native/shared_network.bpf.o` are generated and
-intentionally not tracked. They are architecture-neutral `bpfel` bytecode
-consumed by `go:embed`, rather than Android or Linux native objects. Their GPL
-sources are `native/cgroup.bpf.c` and `native/shared_network.bpf.c`.
-
-The regular cgo compiler cannot create these objects as part of its Android or
-Linux C compilation: cgo produces native machine code, while the cgroup and TC
-programs must be compiled separately with `-target bpfel`. When `TAGS` contains
-`with_ebpf`, the root `make build` target performs that generation automatically.
-Generate them explicitly before direct `go build` or `go test` commands:
+Regeneration is a maintainer operation. It uses Android NDK r29 Clang 21 and
+the NDK Linux UAPI sysroot, even when the final binary targets Linux:
 
 ```sh
 ANDROID_NDK_HOME=/usr/share/android-ndk-r29 make ebpf_generate
+make ebpf_check
 ```
 
-The generated objects remain ignored by Git. `make ebpf_check` is available
-for local reproducibility checks after generation. Both use the baseline BPF
-v1 instruction set so changing the host or NDK Clang does not silently raise
-the kernel instruction-set requirement.
+The Makefile clears ambient include-path variables, passes `-nostdinc`, and
+allows only Clang resource headers, `native`, and the pinned NDK sysroot. The
+`bpf2go` Go generator always runs as the build-host platform; `BPF_CLANG` still
+controls the compiler used for the BPF C sources. `manifest.txt` records the
+normalized flags, tool versions, source hashes, and object hashes.
 
-When native IPv6 interception is disabled, the cgroup loader selects smaller
-IPv4-mapped `connect6`, `sendmsg6`, and `recvmsg6` sections. These preserve
-IPv4 traffic from dual-stack applications without loading the unused native
-IPv6 policy and redirect path. Dual-stack configurations continue to select
-the complete IPv6 sections.
+## Compatibility invariants
 
-## Testing
+- Shared mode and TCP-only local mode target Linux 4.19. Local UDP needs the
+  upstream 5.2 cgroup UDP recvmsg attach types or a vendor backport.
+- Android GKI 5.10+ and standard Linux/OpenWrt are the primary validation
+  targets. Capability probes are authoritative because vendor kernels backport
+  features independently.
+- Programs use the BPF v1 instruction set and do not require BTF, CO-RE,
+  bounded-loop verification, BPF timers, dynptrs, kfuncs, or pinned bpffs state.
+  Default-priority shared-network attachment uses TCX when available and
+  otherwise falls back to clsact.
+- Shared host addresses use exact-match hash maps. They are not prefixes, and
+  this avoids the Linux 6.6.0 through 6.6.46 LPM-trie UBSAN issue. UID/package
+  filters and prefix-based CIDR policies still use LPM tries and are rejected
+  on a known-unfixed kernel.
+- IPv4 and native IPv6 sections are selected independently. When native IPv6 is
+  disabled, smaller IPv4-mapped cgroup sections are loaded.
 
-Run the focused Linux tests with cgo, without cgo, and under the race detector:
+## Tests and diagnostics
+
+Run the focused tests without cgo:
 
 ```sh
-CGO_ENABLED=1 go test -tags with_ebpf ./common/ebpf ./protocol/ebpf ./include
-CGO_ENABLED=0 go test -tags with_ebpf ./common/ebpf ./protocol/ebpf ./include
-CGO_ENABLED=1 go test -race -tags with_ebpf ./common/ebpf ./protocol/ebpf ./include
+CGO_ENABLED=0 go test -tags with_ebpf \
+  ./common/ebpf ./protocol/ebpf ./include ./option
 ```
 
-An Android cross-build validates the NDK headers, native ABI, and cgo boundary:
+An Android cross-test checks build tags and generated ABI without running the
+test binary on Android:
 
 ```sh
-GOOS=android GOARCH=arm64 CGO_ENABLED=1 \
-CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang" \
-go test -c -tags with_ebpf -o /tmp/sing-box-ebpf-android.test ./protocol/ebpf
+GOOS=android GOARCH=arm64 CGO_ENABLED=0 \
+  go test -c -tags with_ebpf -o /tmp/sing-box-ebpf-android.test ./protocol/ebpf
 ```
 
-The root integration tests are excluded from normal test builds and require
-the `ebpf_integration` build tag. The program-load test creates the maps and
-asks the kernel verifier to load the IPv4 and dual-stack program matrix with
-TCP, UDP, or both protocols, DNS hijack enabled or disabled, automatic IPv6
-availability enabled or disabled, and TGID or socket-cookie self bypass. It
-also covers the socket-release program when the kernel supports it and the UDP
-LRU fallback otherwise, then closes everything without attaching. The traffic
-test creates a temporary child cgroup and verifies IPv4
-TCP redirection, original destination and UID recovery, and DNS-priority UDP
-redirection through a configured private CIDR bypass. It also passes protected
-TCP and UDP sockets into the child cgroup and verifies that socket-cookie self
-bypass prevents them from returning to the redirect listeners. The program-load
-target cgroup is auto-detected unless `SING_BOX_EBPF_INTEGRATION_CGROUP` is set.
-The standalone shared-network load test verifies that the TC backend can create
-and populate its own bypass maps without a cgroup backend:
+Privileged integration tests are opt-in. The load test exercises the cgroup and
+standalone shared program matrix; the datapath test creates a temporary network
+namespace and veth pair:
 
 ```sh
 sudo -E SING_BOX_EBPF_INTEGRATION=1 \
-go test -count=1 \
-  -run 'Test(CgroupBackend(ProgramLoad|Traffic)|SharedNetwork(SharedMap|Standalone)ProgramLoad)Integration' \
-  -tags with_ebpf,ebpf_integration ./common/ebpf
-```
+  go test -count=1 -tags with_ebpf,ebpf_integration \
+  -run 'Test(CgroupBackend|SharedNetwork).*Integration' ./common/ebpf
 
-The shared-network integration test additionally creates a temporary network
-namespace and veth pair. It verifies IPv4 and IPv6 public TCP interception,
-a large TCP payload through the TC/GSO path, dual-stack fragmented UDP round
-trips, dual-stack DNS capture to the gateway in the default hijack mode, DHCP
-bypass, fail-closed behavior at map capacity, reply source restoration, TC
-cleanup, local redirect routes, and
-`route_localnet` restoration. It requires `ip` and `nc`:
-
-```sh
 sudo -E SING_BOX_EBPF_SHARED_INTEGRATION=1 \
-go test -count=1 -run TestSharedNetworkDataPathIntegration \
-  -tags with_ebpf,ebpf_integration ./protocol/ebpf
+  go test -count=1 -tags with_ebpf,ebpf_integration \
+  -run TestSharedNetworkDataPathIntegration ./protocol/ebpf
 ```
 
-Setting `SING_BOX_EBPF_INTEGRATION_ATTACH=1` also attaches each program before
-cleanup. Use that mode only with an empty, dedicated cgroup passed through
-`SING_BOX_EBPF_INTEGRATION_CGROUP`; attaching to a populated root cgroup can
-briefly affect unrelated traffic. Preparing the target also removes stale
-programs whose names start with `sb_ebpf_`.
+Use an empty, dedicated cgroup when testing attachment. `ProbeKernel` provides
+the non-disruptive capability report for callers that need a preflight; normal
+mihomo startup runs the backend's direct cilium/ebpf feature checks. The probe
+creates transient objects and closes them immediately without attaching
+programs or changing routes, qdiscs, sysctls, cgroups, or traffic.
 
-For Android soak tests, record the startup program list and monitor the Clash
-API connection view while exercising repeated short TCP connections, UDP
-session expiry, and connected UDP socket churn. Traffic should continue to use
-the correct original destination without persistent lookup or map operation
-errors in the log.
+For a temporary diagnostic build, add the `ebpf_debug` tag together with
+`with_ebpf`. It adds one-minute runtime snapshots with Go heap, RSS, GC,
+goroutine, and maintenance-task timing counters. It does not add probes to the
+packet hot path. Set `SING_BOX_EBPF_PPROF_PORT` to a TCP port to expose Go
+pprof on `127.0.0.1` only; the endpoint is disabled when the variable is
+unset. See the [troubleshooting guide](../../docs/manual/misc/ebpf-troubleshooting.md)
+for collection commands and scope limitations.
 
 ## Credits
 
 The native interception implementation is based on
-[Asterisk4Magisk/bpf2socks](https://github.com/Asterisk4Magisk/bpf2socks) and
-has been adapted for direct integration as a sing-box inbound, without a SOCKS
-bridge.
-
-The derived native source remains available under GPL-3.0. See
+[Asterisk4Magisk/bpf2socks](https://github.com/Asterisk4Magisk/bpf2socks) and is
+adapted for direct integration as a sing-box inbound without a SOCKS bridge.
+The derived native source remains available under GPL-3.0; see
 [`native/LICENSE`](native/LICENSE).

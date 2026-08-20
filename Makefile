@@ -188,14 +188,14 @@ ebpf_generate:
 ebpf_check:
 	$(MAKE) -C common/ebpf check
 
-linux-amd64-ebpf: ebpf_generate
-	CGO_ENABLED=1 GOARCH=amd64 GOOS=linux GOAMD64=v3 go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
+linux-amd64-ebpf:
+	CGO_ENABLED=0 GOARCH=amd64 GOOS=linux GOAMD64=v3 go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
 
-linux-arm64-ebpf: ebpf_generate
-	CGO_ENABLED=1 GOARCH=arm64 GOOS=linux go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
+linux-arm64-ebpf:
+	CGO_ENABLED=0 GOARCH=arm64 GOOS=linux go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
 
-android-arm64-ebpf: ebpf_generate
-	CGO_ENABLED=1 GOARCH=arm64 GOOS=android go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
+android-arm64-ebpf:
+	CGO_ENABLED=0 GOARCH=arm64 GOOS=android go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
 
 all-ebpf: linux-amd64-ebpf linux-arm64-ebpf
 

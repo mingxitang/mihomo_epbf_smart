@@ -1,8 +1,8 @@
 # eBPF transparent inbound
 
 This document covers the Linux/Android cgroup eBPF transparent inbound and the
-optional shared-network TC data path. The feature is enabled only in builds
-with cgo and the `with_ebpf` build tag on Linux or Android. Other platforms
+optional shared-network TCX/TC data path. The feature is enabled in pure-Go
+builds with the `with_ebpf` build tag on Linux or Android. Other platforms
 compile with a stub that returns an explicit unsupported error.
 
 ## Supported environments
@@ -37,34 +37,24 @@ The shared-network path additionally needs `CONFIG_NET_CLS_BPF`.
 
 ## Capability probe
 
-Run the bundled probe before starting mihomo:
-
-```bash
-bash common/ebpf/check-kernel.sh --mode all
-```
-
-For a specific cgroup path and a shared-network downstream interface:
-
-```bash
-bash common/ebpf/check-kernel.sh --mode all --cgroup /sys/fs/cgroup --interface wlan0
-```
-
-The probe does not attach programs or change routes. With `bpftool` installed
-it performs transient feature probes; without `bpftool` it reports
-`UNKNOWN` for features that cannot be proven safely.
+The cilium/ebpf backend performs direct kernel feature probes while preparing
+the inbound and reports unsupported required features in the startup error.
+The old `common/ebpf/check-kernel.sh` probe was removed in `.3`. For a
+repeatable preflight, run the privileged integration suite shown below on the
+target kernel; `bpftool prog show`, `bpftool map show`, and `bpftool link show`
+remain useful for observing active state.
 
 ## Build
 
-The eBPF build requires a Linux build host (or Android NDK for Android) and
-clang for the BPF object:
+Normal builds consume the checked-in generated BPF objects and do not require
+cgo, clang, a cross C compiler, or an Android NDK:
 
 ```bash
-make ebpf_generate
-CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags "with_gvisor with_ebpf" -o mihomo-ebpf .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags "with_gvisor with_ebpf" -o mihomo-ebpf .
 ```
 
-Android ARM64 uses the NDK clang as `CC`; see
-`.github/workflows/androidarm64.yml` and `.github/workflows/build-ebpf.yml`.
+Maintainers need Clang and the pinned NDK sysroot only when regenerating the
+objects with `make ebpf_generate`; see `common/ebpf/README.md`.
 
 ## Configuration
 
@@ -74,49 +64,51 @@ Add an `ebpf` listener to the `listeners` section:
 listeners:
   - name: ebpf-inbound
     type: ebpf
+    mode: hybrid
     network: [tcp, udp]
-    cgroup-path: /sys/fs/cgroup
-    redirect-address:
-      - 127.128.0.0/9
     dns-mode: hijack
-    cgroup-ipv6-mode: auto
     udp-timeout: 300
-    map-capacity:
-      tcp-redirect: 65536
-      udp-redirect: 65536
-      socket-bypass: 65536
+    bypass-private-address: true
     bypass-rule-set: []
-    include-uid: []
-    exclude-uid: []
-    shared-network:
-      enabled: false
+    local:
+      cgroup-path: /sys/fs/cgroup
+      ipv6-mode: auto
+      include-uid: []
+      exclude-uid: []
+      state-capacity: 65536
+    shared:
+      interface: [wlan0]
+      ipv6-mode: off
+      state-capacity: 65536
+      advanced:
+        tc-priority: 0
 ```
 
 Field behavior:
 
 - `network`: `tcp`, `udp`, or both. Defaults to both when omitted.
-- `cgroup-path`: absolute cgroup v2 directory. Empty means auto-detect.
-- `redirect-address`: at most one IPv4 prefix and one IPv6 prefix. The default
-  is IPv4 `127.128.0.0/9` with IPv6 disabled.
-- `dns-mode`: `hijack` or `off`. Defaults to `hijack`.
-- `cgroup-ipv6-mode`: `always`, `auto`, or `off`. Defaults to `always`.
+- `mode`: `local`, `shared`, or `hybrid`.
+- `dns-mode`: `hijack`, `respect_bypass`, or `off`.
 - `udp-timeout`: UDP NAT mapping timeout in seconds. Defaults to 300. The
   startup log prints the normalized duration as `udp_timeout=5m0s` for a value
   of `300`.
-- `map-capacity`: maximum entries for the redirect and bypass maps. Values are
-  capped at `1 << 20`; zero uses the built-in default.
 - `bypass-rule-set`: rule provider tags whose CIDRs populate the bypass map.
-- `include-uid`, `include-uid-range`, `exclude-uid`, `exclude-uid-range`:
+- `local.cgroup-path`: absolute cgroup v2 directory. Empty means auto-detect.
+- `local.ipv6-mode`: `always`, `auto`, or `off`.
+- `local.include-uid`, `local.include-uid-range`, `local.exclude-uid`,
+  `local.exclude-uid-range`:
   UID-based interception policy. Ranges use `start:end` syntax.
-- Android only: `include-android-user`, `include-package`, `exclude-package`.
-- `shared-network`: enables hotspot/TC forwarding on the named interfaces.
+- Android-only package and user policy also lives under `local`.
+- `shared.interface` selects downstream interfaces. Default priority uses TCX
+  when available and falls back to clsact; non-default `advanced.tc-priority`
+  uses clsact.
 
 ## IPv4 and IPv6 behavior
 
 The internal TCP and UDP listeners are created with explicit address families
 (`tcp4`, `tcp6`, `udp4`, `udp6`) and IPv6 listeners set `IPV6_V6ONLY`. This
 avoids implicit dual-stack listener behavior and keeps the BPF lookup keys
-deterministic. With `cgroup-ipv6-mode: auto`, IPv6 interception is enabled only
+deterministic. With `local.ipv6-mode: auto`, IPv6 interception is enabled only
 when the host appears to provide IPv6 connectivity; the probe result is logged.
 
 The redirect address must not overlap routable local traffic. For IPv4 the
@@ -130,13 +122,12 @@ configured.
 Android uses the same cgroup v2 mechanism but the effective cgroup hierarchy
 and permission model differ by vendor. The auto-detected cgroup path can be
 overridden with `cgroup-path`. Package policy is resolved to Android UIDs and
-`include-android-user` maps a user ID to its per-user UID range. The DNS
-tethering UID is always excluded.
+`local.include-android-user` maps a user ID to its per-user UID range.
 
 SELinux must permit BPF map/program creation, cgroup attach, and socket
 operations for the mihomo domain. On restricted Android builds the feature is
-usually only usable from a root or Magisk-provided service context. Run
-`common/ebpf/check-kernel.sh` on the device before debugging startup failures.
+usually only usable from a root or Magisk-provided service context. Use the
+startup probe error and privileged integration suite before debugging traffic.
 
 ## Containers
 
@@ -199,16 +190,12 @@ does not depend on stale pinned objects.
 
 ## Privileged integration tests
 
-The `privileged-integration` job in `.github/workflows/build-ebpf.yml` probes
-the runner with `common/ebpf/check-kernel.sh` and marks the job SKIP when
-required BPF/cgroup features cannot be proven. GitHub-hosted runners are
-expected to SKIP because the probe cannot distinguish cgroup sockaddr attach
-subtypes without a real load. Run the real suite on a self-hosted Linux
-runner with cgroup v2, root access, and bpftool:
+The `privileged-integration` job in `.github/workflows/build-ebpf.yml` runs the
+real pure-Go suite. Run the same suite on a self-hosted Linux runner with
+cgroup v2 and root access:
 
 ```bash
-bash common/ebpf/check-kernel.sh --mode all --cgroup /sys/fs/cgroup
-SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=1 go test -count=1 \
+SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=0 go test -count=1 \
   -tags "with_gvisor with_ebpf ebpf_integration" \
   ./common/ebpf/... -run Integration
 ```
