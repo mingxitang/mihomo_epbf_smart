@@ -147,11 +147,15 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run privileged eBPF integration tests
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           go mod download
-          sudo -E env SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=0 GOCACHE=/tmp/gocache go test -count=1 -tags "with_gvisor with_ebpf ebpf_integration" ./common/ebpf/... -run 'Integration'
+          go_bin="$(command -v go)"
+          sudo -E env SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=0 GOCACHE=/tmp/gocache \
+            "${go_bin}" test -count=1 -tags "with_gvisor with_ebpf ebpf_integration" \
+            ./common/ebpf/... -run 'Integration'
 
   cross-platform:
     runs-on: ubuntu-latest

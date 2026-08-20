@@ -371,7 +371,7 @@ sudo -E env SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=0 \
   ./common/ebpf/... -run Integration
 ```
 
-GitHub hosted runner 若不开放所需 cgroup/BPF 权限会直接暴露集成测试失败。最终仍需在实际 Android/Linux 设备验证。
+GitHub hosted runner 通常不开放所需 cgroup/BPF 权限，因此该 job 是建议性检查，不阻断 Android 构建和 Release。它会明确使用 `setup-go` 安装的 Go 路径，避免 `sudo` 回退到 runner 自带的旧 Go；最终仍需在实际 Android/Linux 设备完成特权验证。
 
 ### 7.5 设备验收
 

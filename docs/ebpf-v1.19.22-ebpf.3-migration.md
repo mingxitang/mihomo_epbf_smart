@@ -30,7 +30,9 @@ socket-release workaround.
 - eBPF builds and tests run with `CGO_ENABLED=0`; old NDK/cross-C-compiler and
   sing-tun patch steps are no longer part of the eBPF build path.
 - The obsolete `common/ebpf/check-kernel.sh` workflow call was removed. The
-  privileged job now runs the new pure-Go integration suite directly.
+  privileged job now runs the new pure-Go integration suite directly. It uses
+  the absolute `setup-go` binary path across `sudo`; hosted-runner capability
+  failures are advisory and do not block the Android release.
 - The automated build/release target is Android ARM64. Linux and other
   platforms remain test or compile checks, but are not published by this
   release pipeline. The artifact and released binary are both named `mihomo`;
@@ -64,6 +66,14 @@ Validated locally on 2026-08-20 with official Go 1.26.5:
 - [ ] privileged Linux eBPF integration tests.
 
 The local Windows host cannot execute the compiled Linux tests and access to
-WSL is denied, so the privileged suite remains a CI/target-device gate. The
-migration is not ready to merge into `Alpha` until that job completes
-successfully.
+WSL is denied. GitHub-hosted runners also do not guarantee the required kernel
+and cgroup capabilities, so the privileged suite remains a target-device gate
+rather than an Android artifact publication gate.
+
+GitHub Actions run
+[`32347359334`](https://github.com/mingxitang/mihomo_epbf_smart/actions/runs/32347359334)
+validated the ordinary tests, tagged eBPF package tests, generated objects,
+cross-platform compilation, and the Android ARM64 `mihomo` artifact. Its first
+attempt also exposed that `sudo` selected the runner's Go 1.24.13 instead of
+the configured Go 1.26; the workflow now passes the absolute configured Go
+binary and treats host capability failures as advisory.

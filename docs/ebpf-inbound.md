@@ -191,8 +191,10 @@ does not depend on stale pinned objects.
 ## Privileged integration tests
 
 The `privileged-integration` job in `.github/workflows/build-ebpf.yml` runs the
-real pure-Go suite. Run the same suite on a self-hosted Linux runner with
-cgroup v2 and root access:
+real pure-Go suite as an advisory hosted-runner check. It does not block the
+Android artifact because GitHub-hosted runners do not guarantee the required
+kernel capabilities. Run the same suite as a required gate on a self-hosted
+Linux runner with cgroup v2 and root access:
 
 ```bash
 SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=0 go test -count=1 \
