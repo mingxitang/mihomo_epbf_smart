@@ -102,7 +102,7 @@ jobs:
           gh run download "${BUILD_RUN_ID}" \
             --repo "${GITHUB_REPOSITORY}" \
             --name mihomo \
-            --dir artifacts
+            --dir artifacts/mihomo
 
       - name: Verify and prepare release assets
         if: steps.build.outputs.exists == 'false'
@@ -121,8 +121,13 @@ jobs:
           binary="${artifact_root}/dist/${name}"
           checksum="${binary}.sha256"
 
-          test -f "${binary}"
-          test -f "${checksum}"
+          for required in "${binary}" "${checksum}"; do
+            if [ ! -f "${required}" ]; then
+              echo "Required release artifact is missing: ${required}" >&2
+              find artifacts -maxdepth 3 -type f -print >&2
+              exit 1
+            fi
+          done
           (cd "${artifact_root}" && sha256sum -c "dist/${name}.sha256")
 
           cp "${binary}" "release/${name}"

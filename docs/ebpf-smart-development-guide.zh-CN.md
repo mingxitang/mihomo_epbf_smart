@@ -263,6 +263,8 @@ sha256sum -c dist/mihomo.sha256
 
 1. 再次通过 GitHub API 校验来源工作流、分支、结论和提交 SHA；
 2. 下载 Android ARM64 artifact；
+   命名 artifact 会显式解压到 `artifacts/mihomo`，校验路径为
+   `artifacts/mihomo/dist/mihomo`；
 3. 校验构建阶段生成的 SHA-256；
 4. 发布一个带唯一构建 run ID 的 GitHub prerelease。
 

@@ -59,6 +59,10 @@ kept the migration branch's Smart `5664b1ba` and eBPF `.3` state, its newer
 `mipstack` dependency, and the OpenVPN `IV_PROTO=22` capability advertisement
 with the matching tests. The Smart constant conflict was formatting-only.
 
+The first Alpha release run exposed that `gh run download --name mihomo`
+extracts the named artifact contents directly into the requested directory.
+The release workflow now downloads into `artifacts/mihomo`, matching its
+`dist/mihomo` verification path and reporting the discovered files on failure.
 
 ## Validation status
 
