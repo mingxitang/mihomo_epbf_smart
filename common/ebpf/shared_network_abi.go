@@ -1,3 +1,5 @@
+//go:build with_ebpf && (linux || android)
+
 package ebpf
 
 import (
@@ -9,14 +11,27 @@ import (
 	E "github.com/metacubex/sing/common/exceptions"
 )
 
+const sharedNetworkStatTokenReservationFailure = 0
+
+const (
+	sharedNetworkScratchSize         = 352
+	sharedNetworkFragmentKeySize     = 44
+	sharedNetworkFragmentValueSize   = 32
+	sharedNetworkBypassFlowValueSize = 16
+	sharedNetworkReplyValueSize      = 20
+)
+
 type SharedNetworkConfig struct {
 	ListenerPort         uint16
 	EnableTCP            bool
 	EnableUDP            bool
 	HijackDNS            bool
+	DNSRespectBypass     bool
 	BypassPrivateAddress bool
 	RedirectIPv4         netip.Prefix
 	RedirectIPv6         netip.Prefix
+	FakeIPIPv4           netip.Prefix
+	FakeIPIPv6           netip.Prefix
 	IncludeSourceCIDR    []netip.Prefix
 	ExcludeSourceCIDR    []netip.Prefix
 	IncludeSourceMAC     []MACAddress
@@ -43,6 +58,10 @@ type sharedNetworkControl struct {
 	Reserved2           [2]byte
 	TokenIPv6Prefix     [16]byte
 	UDPTimeoutSeconds   uint32
+	FakeIPIPv4Prefix    [4]byte
+	FakeIPIPv4Mask      [4]byte
+	FakeIPIPv6Prefix    [16]byte
+	FakeIPIPv6Mask      [16]byte
 }
 
 func sharedNetworkUDPTimeoutSeconds(timeout time.Duration) (uint32, error) {
@@ -88,6 +107,13 @@ type sharedNetworkOriginalKey struct {
 	OriginalAddr   [16]byte
 }
 
+type sharedNetworkTokenValue struct {
+	TokenAddr   [16]byte
+	Generation  uint64
+	CreatedAtNS uint64
+	LastSeenNS  uint64
+}
+
 type sharedNetworkReplyKey struct {
 	InterfaceIndex uint32
 	Family         uint8
@@ -116,6 +142,13 @@ type SharedNetworkFlowHandle struct {
 	listenerKey sharedNetworkListenerKey
 }
 
+type SharedNetworkFlowSweepResult struct {
+	Scanned  uint32
+	Removed  uint32
+	Retained uint32
+	Usage    MapUsage
+}
+
 const (
 	sharedNetworkFlagIPv4 = 1 << iota
 	sharedNetworkFlagIPv6
@@ -132,6 +165,9 @@ const (
 	sharedNetworkFlagExcludeSourceMAC
 	sharedNetworkFlagBypassPrivateAddress
 	sharedNetworkFlagBypassFlowCache
+	sharedNetworkFlagDNSRespectBypass
+	sharedNetworkFlagFakeIPIPv4
+	sharedNetworkFlagFakeIPIPv6
 )
 
 const sharedNetworkPolicyFlags = sharedNetworkFlagHostIPv4 |
@@ -213,5 +249,28 @@ func makeSharedNetworkFlowHandle(key sharedNetworkListenerKey, value sharedNetwo
 			TokenAddr:      key.TokenAddr,
 		},
 		listenerKey: key,
+	}
+}
+
+func makeSharedNetworkFlowHandleFromOriginal(
+	key sharedNetworkOriginalKey,
+	token [16]byte,
+	listenerPort uint16,
+) SharedNetworkFlowHandle {
+	return SharedNetworkFlowHandle{
+		originalKey: key,
+		replyKey: sharedNetworkReplyKey{
+			InterfaceIndex: key.InterfaceIndex,
+			Family:         key.Family,
+			Protocol:       key.Protocol,
+			ClientPort:     key.ClientPort,
+			ListenerPort:   listenerPort,
+			ClientAddr:     key.ClientAddr,
+			TokenAddr:      token,
+		},
+		listenerKey: sharedNetworkListenerKey{
+			Family: key.Family, Protocol: key.Protocol, ListenerPort: listenerPort,
+			TokenAddr: token, ClientPort: key.ClientPort, ClientAddr: key.ClientAddr,
+		},
 	}
 }

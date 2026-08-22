@@ -53,17 +53,14 @@ objects and running the tagged tests:
 
 ```sh
 make ebpf_generate
-CGO_ENABLED=1 go test -count=1 -tags "with_gvisor with_ebpf" \
+CGO_ENABLED=0 go test -count=1 -tags "with_gvisor with_ebpf" \
   ./common/ebpf/... ./listener/sing_ebpf/...
 make linux-amd64-ebpf
 ```
 
 Before a privileged runtime test, verify the target kernel and cgroup v2
-environment:
-
-```sh
-bash common/ebpf/check-kernel.sh --mode all
-```
+environment by running the pure-Go integration suite documented in
+`docs/ebpf-inbound.md`.
 
 See `docs/ebpf-inbound.md` for configuration, required capabilities, Android
 notes, and privileged integration-test commands.
@@ -93,15 +90,13 @@ Downloaded artifacts are stored under the ignored local directory
 `output/github-actions-31680555204/`; their SHA-256 digests match the checksum
 files emitted by the workflow.
 
-### Go 1.20 compatibility
+### Go 1.25 baseline
 
-The initial eBPF port used the standard-library `slices` package while this
-repository still declares Go 1.20 and intentionally builds compatibility
-artifacts with that version. Since `slices` entered the standard library in Go
-1.21, the ordinary Build/Test matrix failed on every Go 1.20 runner even though
-the dedicated Go 1.26 eBPF workflow passed. Shared-network host-prefix sorting
-now uses `sort.Slice`, preserving the same ordering while restoring Go 1.20
-compilation.
+The `v1.19.22-ebpf.3` migration raises the module baseline to Go 1.25.0 and
+uses Go 1.26 for the default CI and release builds, matching both current
+upstreams. The ordinary test matrix now covers Go 1.25 and 1.26 only; legacy
+Go 1.20-1.24 compatibility artifacts were removed because they cannot load a
+module that declares Go 1.25.
 
 ## UDP DNS binding lifetime fix
 
@@ -185,12 +180,18 @@ and build dispatch were correctly skipped.
 
 ## Automatic release publishing
 
-`.github/workflows/release-ebpf.yml` runs after a successful
-`Build eBPF branch` workflow on `Alpha`. It validates the source workflow run,
-downloads the Linux AMD64 v3, Linux ARM64, and Android ARM64 artifacts, verifies
-their build-time SHA-256 files, and publishes the binaries and fresh checksum
-files as a GitHub prerelease. `BUILD_INFO.txt` records the source run, commit,
-timestamp, and URL.
+After every job succeeds on `Alpha`, `.github/workflows/build-ebpf.yml`
+explicitly dispatches `.github/workflows/release-ebpf.yml` with its run ID.
+The explicit dispatch also works when the build itself was started by the
+upstream synchronization workflow using `GITHUB_TOKEN`; it replaces the
+unreliable chained `workflow_run` trigger. The release workflow waits for the
+source run to reach its final state, validates it,
+downloads the Android ARM64 artifact, verifies its build-time SHA-256 file, and
+publishes it as `mihomo` with `mihomo.sha256` as a GitHub prerelease.
+`BUILD_INFO.txt` records the source run, commit, timestamp, and URL. Scheduled
+upstream checks dispatch this pipeline after a released change is integrated;
+a manual synchronization can force it for the current `Alpha` even when no
+upstream state changed.
 
 Tags include the UTC build date, Actions run ID, and the first twelve commit
 characters, so every successful build has a traceable release. Re-running the

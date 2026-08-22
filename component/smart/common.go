@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	OpSaveNodeState         = iota
+	OpSaveNodeState = iota
 	OpSaveStats
 	OpSavePrefetch
 	OpSaveRanking
@@ -27,40 +27,40 @@ const (
 )
 
 const (
-	KeyTypePrefetch         = "prefetch"
-	KeyTypeNode             = "node"
-	KeyTypeStats            = "stats"
-	KeyTypeRanking          = "ranking"
-	KeyTypeHostFailures     = "failures"
+	KeyTypePrefetch     = "prefetch"
+	KeyTypeNode         = "node"
+	KeyTypeStats        = "stats"
+	KeyTypeRanking      = "ranking"
+	KeyTypeHostFailures = "failures"
 
-	WeightTypeTCP           = "tcp"
-	WeightTypeUDP           = "udp"
-	WeightTypeTCPASN        = "tcp_asn"
-	WeightTypeUDPASN        = "udp_asn"
+	WeightTypeTCP    = "tcp"
+	WeightTypeUDP    = "udp"
+	WeightTypeTCPASN = "tcp_asn"
+	WeightTypeUDPASN = "udp_asn"
 )
 
 const (
-	DefaultMinSampleCount   = 2
+	DefaultMinSampleCount = 2
 
-	MaxTargetsLimit         = 5000
-	MinTargetsLimit         = 500
-	MaxBatchThreshLimit     = 300
-	MinBatchThreshLimit     = 50
+	MaxTargetsLimit     = 5000
+	MinTargetsLimit     = 500
+	MaxBatchThreshLimit = 300
+	MinBatchThreshLimit = 50
 
-	RecordExpiredTime       = 7 * 24 * time.Hour
+	RecordExpiredTime = 7 * 24 * time.Hour
 
-	HostFailureNodeTTL      = 24 * time.Hour
-	hostStatusRetryAfter    = 4 * time.Hour
+	HostFailureNodeTTL   = 24 * time.Hour
+	hostStatusRetryAfter = 4 * time.Hour
 
-	AllowedWeight           = 0.4
+	AllowedWeight = 0.4
 
-	RankMostUsed            = "MostUsed"
-	RankOccasional          = "OccasionalUsed"
-	RankRarelyUsed          = "RarelyUsed"
+	RankMostUsed   = "MostUsed"
+	RankOccasional = "OccasionalUsed"
+	RankRarelyUsed = "RarelyUsed"
 )
 
 var (
-	db *bbolt.DB
+	db               *bbolt.DB
 	bucketSmartStats = []byte("smart_stats")
 
 	globalOperationQueue atomic.TypedValue[[]StoreOperation]
@@ -108,7 +108,7 @@ var CdnASNs = map[string]bool{
 }
 
 type (
-	Store struct {}
+	Store struct{}
 
 	StoreOperation struct {
 		Type    int
@@ -448,7 +448,7 @@ func GetSystemMemoryUsage() float64 {
 	return 0.5
 }
 
-func InitQueue()  {
+func InitQueue() {
 	threshold := GetBatchSaveThreshold()
 	emptyQueue := make([]StoreOperation, 0, threshold)
 	replaceGlobalQueue(emptyQueue)

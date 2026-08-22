@@ -11,8 +11,11 @@
 #define SB_SHARED_SOURCE_CIDR_MAP_ENTRIES 4096U
 #define SB_SHARED_SOURCE_MAC_MAP_ENTRIES 1024U
 #define SB_SHARED_TOKEN_ATTEMPTS 8U
-#define SB_SHARED_NETWORK_SCRATCH_SIZE 320U
+#define SB_SHARED_NETWORK_SCRATCH_SIZE 352U
 #define SB_SHARED_FRAGMENT_TIMEOUT_NS 30000000000ULL
+#define SB_SHARED_ACTIVITY_UPDATE_INTERVAL_NS 1000000000ULL
+#define SB_SHARED_STAT_TOKEN_RESERVATION_FAILURE 0U
+#define SB_SHARED_STAT_COUNT 1U
 
 #define SB_SHARED_FRAGMENT_DIRECTION_INGRESS 1U
 #define SB_SHARED_FRAGMENT_DIRECTION_EGRESS 2U
@@ -32,6 +35,9 @@
 #define SB_SHARED_FLAG_EXCLUDE_SOURCE_MAC (1U << 12)
 #define SB_SHARED_FLAG_BYPASS_PRIVATE_ADDRESS (1U << 13)
 #define SB_SHARED_FLAG_BYPASS_FLOW_CACHE (1U << 14)
+#define SB_SHARED_FLAG_DNS_RESPECT_BYPASS (1U << 15)
+#define SB_SHARED_FLAG_FAKEIP_IPV4 (1U << 16)
+#define SB_SHARED_FLAG_FAKEIP_IPV6 (1U << 17)
 
 struct sb_shared_control {
     __u32 enabled;
@@ -44,6 +50,10 @@ struct sb_shared_control {
     __u8 reserved2[2];
     __u8 token_ipv6_prefix[16];
     __u32 udp_timeout_seconds;
+    __u8 fakeip_ipv4_prefix[4];
+    __u8 fakeip_ipv4_mask[4];
+    __u8 fakeip_ipv6_prefix[16];
+    __u8 fakeip_ipv6_mask[16];
 };
 
 struct sb_shared_original_key {
@@ -59,6 +69,9 @@ struct sb_shared_original_key {
 
 struct sb_shared_token_value {
     __u8 token_addr[16];
+    __u64 generation;
+    __u64 created_at_ns;
+    __u64 last_seen_ns;
 };
 
 struct sb_shared_mac_key {
@@ -142,16 +155,17 @@ struct sb_shared_scratch {
     __u8 padding[20];
 };
 
-_Static_assert(sizeof(struct sb_shared_control) == 40U, "shared control ABI");
+_Static_assert(sizeof(struct sb_shared_control) == 80U, "shared control ABI");
 _Static_assert(sizeof(struct sb_shared_original_key) == 44U, "shared original key ABI");
 _Static_assert(sizeof(struct sb_shared_reply_key) == 44U, "shared reply key ABI");
 _Static_assert(sizeof(struct sb_shared_listener_key) == 40U, "shared listener key ABI");
 _Static_assert(sizeof(struct sb_shared_original_value) == 36U, "shared original value ABI");
+_Static_assert(sizeof(struct sb_shared_token_value) == 40U, "shared token value ABI");
 _Static_assert(sizeof(struct sb_shared_fragment_key) == 44U, "shared fragment key ABI");
 _Static_assert(sizeof(struct sb_shared_fragment_value) == 32U, "shared fragment value ABI");
-_Static_assert(__builtin_offsetof(struct sb_shared_scratch, original_value) == 164U, "shared original value offset ABI");
-_Static_assert(__builtin_offsetof(struct sb_shared_scratch, fragment_value) == 224U, "shared fragment value offset ABI");
-_Static_assert(__builtin_offsetof(struct sb_shared_scratch, fragment_key) == 256U, "shared fragment key offset ABI");
+_Static_assert(__builtin_offsetof(struct sb_shared_scratch, original_value) == 192U, "shared original value offset ABI");
+_Static_assert(__builtin_offsetof(struct sb_shared_scratch, fragment_value) == 256U, "shared fragment value offset ABI");
+_Static_assert(__builtin_offsetof(struct sb_shared_scratch, fragment_key) == 288U, "shared fragment key offset ABI");
 _Static_assert(sizeof(struct sb_shared_scratch) == SB_SHARED_NETWORK_SCRATCH_SIZE, "shared-network scratch ABI");
 
 #endif

@@ -132,38 +132,28 @@ go vet ./...
 listeners:
   - name: ebpf-in
     type: ebpf
+    mode: hybrid
     network: [tcp, udp]
-    cgroup-path: ""
     udp-timeout: 300
     dns-mode: hijack
-
-    # 使用 IPv6 fake-IP 时建议 always，fake-IP 不依赖原生 IPv6 出口探测。
-    cgroup-ipv6-mode: always
-
-    redirect-address:
-      - 127.128.0.0/9
-      - fd53:696e:672d:626f::/64
 
     # 可以绕过真实中国大陆 IP，但不要加入包含 fake-IP 网段的 Private_IP。
     bypass-rule-set:
       - CN_IP
 
-    map-capacity:
-      tcp-redirect: 65536
-      udp-redirect: 65536
-      socket-bypass: 65536
+    local:
+      cgroup-path: ""
+      # 使用 IPv6 fake-IP 时建议 always，fake-IP 不依赖原生 IPv6 出口探测。
+      ipv6-mode: always
+      state-capacity: 65536
 
-    # 使用热点并启用 IPv6 fake-IP 时必须允许 fake ULA 进入代理路径。
     bypass-private-address: false
-    shared-network:
-      enabled: true
-      include-interface: [ap0]
+    shared:
+      interface: [ap0]
+      ipv6-mode: always
       include-source-cidr: []
       exclude-source-cidr: []
-      map-capacity:
-        proxy: 65536
-        bypass: 65536
-        fragment: 65536
+      state-capacity: 65536
 ```
 
 对应 DNS 配置可以继续使用：
@@ -180,7 +170,7 @@ dns:
 启动后至少核对以下字段：
 
 ```text
-[EBPF] inbound attached: ... dns_mode=hijack, udp_timeout=5m0s, cgroup_ipv6_mode=always ...
+[EBPF] inbound attached: ... dns_mode=hijack, udp_timeout=5m0s, local_ipv6_mode=always ...
 ```
 
 如果配置为 `udp-timeout: 300` 却没有看到 `udp_timeout=5m0s`，设备仍在运行旧核心。
@@ -189,14 +179,10 @@ dns:
 
 ### 5.1 Linux AMD64 本地构建
 
-需要 Linux、Go 1.26、Clang、Linux UAPI headers 和 cgo：
+普通构建只需要 Go 1.25+，使用仓库内已生成的 BPF 对象，不需要 cgo、Clang 或 Linux UAPI headers：
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y clang libc6-dev linux-libc-dev
-
-make ebpf_generate
-CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOAMD64=v3 \
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v3 \
   go build -tags "with_gvisor with_ebpf" -trimpath \
   -o bin/mihomo-linux-amd64-ebpf .
 ```
@@ -212,29 +198,25 @@ make linux-amd64-ebpf
 ### 5.2 Linux ARM64
 
 ```bash
-sudo apt-get install -y gcc-aarch64-linux-gnu
-make ebpf_generate
-CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc \
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
   go build -tags "with_gvisor with_ebpf" -trimpath \
   -o bin/mihomo-linux-arm64-ebpf .
 ```
 
 ### 5.3 Android ARM64
 
-Android 构建需要 NDK。CI 当前使用 `r29-beta1` 和 API 35 clang：
+Android 普通构建同样使用仓库内已生成的 BPF 对象，不需要 NDK：
 
 ```bash
-export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang"
-export CGO_ENABLED=1
+export CGO_ENABLED=0
 export GOOS=android
 export GOARCH=arm64
 
-make ebpf_generate
 go build -tags "with_gvisor with_ebpf" -trimpath \
   -o bin/mihomo-android-arm64-ebpf .
 ```
 
-Android 构建还需要按 `.github/workflows/build-ebpf.yml` 将 `.github/patch/sing-tun.patch` 应用到当前 `sing-tun` module cache。优先让 Actions 完成 Android 构建，避免本地 NDK 和依赖补丁版本不一致。
+只有维护者重新生成 BPF 对象时才需要 Clang 与固定的 NDK sysroot，具体以 `common/ebpf/README.md` 和 `make ebpf_generate` 为准。
 
 ### 5.4 GitHub Actions 构建
 
@@ -252,16 +234,16 @@ gh run watch RUN_ID \
 
 `build-ebpf.yml` 只有在完整测试和 BPF 生成检查通过后才构建：
 
-- `mihomo-ebpf-linux-amd64`，AMD64 v3；
-- `mihomo-ebpf-linux-arm64`；
-- `mihomo-ebpf-android-arm64`；
-- `ebpf-privileged-probe`，保存目标 runner 的能力探测日志。
+- `mihomo`（Android ARM64）。
+
+Linux 和其他平台仍参与测试或交叉编译检查，但不再作为这个自动发布链路的 Release 产物。
 
 下载并校验：
 
 ```bash
 gh run download RUN_ID --dir output/github-actions-RUN_ID
-sha256sum -c mihomo-ebpf-linux-amd64.sha256
+cd output/github-actions-RUN_ID/mihomo
+sha256sum -c dist/mihomo.sha256
 ```
 
 每个 artifact 同时带有：
@@ -277,14 +259,14 @@ sha256sum -c mihomo-ebpf-linux-amd64.sha256
 
 ### 5.5 成功构建后自动发布 Release
 
-`.github/workflows/release-ebpf.yml` 监听 `Alpha` 上的 `Build eBPF branch`。只有整个构建工作流成功后，它才会：
+`Build eBPF branch` 在 `Alpha` 上的全部构建和测试 job 成功后，会通过 `workflow_dispatch` 显式调用 `.github/workflows/release-ebpf.yml` 并传入当前 build run ID。这里不使用 `workflow_run` 链式触发，因为由同步工作流使用仓库 `GITHUB_TOKEN` 调度的构建不会可靠地产生下一层工作流。Release 工作流会先等待源 run 正式结束，然后：
 
 1. 再次通过 GitHub API 校验来源工作流、分支、结论和提交 SHA；
-2. 下载 Linux AMD64 v3、Linux ARM64 和 Android ARM64 三个 artifact；
+2. 下载 Android ARM64 artifact；
 3. 校验构建阶段生成的 SHA-256；
 4. 发布一个带唯一构建 run ID 的 GitHub prerelease。
 
-Release 同时包含三个原始二进制、对应的 `.sha256` 和 `BUILD_INFO.txt`。标签格式为：
+Release 包含 Android ARM64 二进制 `mihomo`、`mihomo.sha256` 和 `BUILD_INFO.txt`。标签格式为：
 
 ```text
 ebpf-alpha-YYYYMMDD-rRUN_ID-COMMIT_SHA前12位
@@ -294,6 +276,8 @@ ebpf-alpha-YYYYMMDD-rRUN_ID-COMMIT_SHA前12位
 
 如果自动触发失败，但原构建 artifact 仍在保留期内，可以手动运行 `Release successful eBPF build`，输入成功的 `Build eBPF branch` run ID。手动模式仍会拒绝失败构建、其他工作流或非 `Alpha` 分支的构建。工作流使用仓库内置的 `GITHUB_TOKEN`，权限仅为读取 Actions 和写入仓库 Release，不需要额外配置个人令牌。
 
+普通版本需要手动运行 `Build` 并填写版本号。发布 job 直接检出 `Alpha`、在该提交上创建版本 tag 并上传 Release；仓库不依赖额外的 `Meta` 分支。
+
 ## 6. 自动同步两个上游
 
 自动化文件：
@@ -301,7 +285,7 @@ ebpf-alpha-YYYYMMDD-rRUN_ID-COMMIT_SHA前12位
 - `.github/workflows/sync-upstreams.yml`；
 - `.github/upstream-state.json`。
 
-工作流每 72 小时（GitHub cron 按日历每 3 天的 00:23 UTC）检查一次，也支持手动执行。它不会看到分支有任意提交就立即合并，而是要求源码和 release 都显示实质更新：
+工作流按 GitHub cron 的日历规则，在每月第 1、4、7 日等日期的 00:23 UTC 检查一次，也支持手动执行。它不会看到分支有任意提交就立即合并，而是要求源码和 release 都显示实质更新：
 
 - Smart：`Alpha` 前进，滚动 release `Prerelease-Alpha` 的 marker 改变，并且 release asset 名含新提交的 7 位短 SHA；
 - eBPF：最新 release 改变，其 tag 必须指向 `ebpf-inbound` 中的新提交；
@@ -313,7 +297,20 @@ ebpf-alpha-YYYYMMDD-rRUN_ID-COMMIT_SHA前12位
 2. 合并准备好的 eBPF release；
 3. 更新 `.github/upstream-state.json`；
 4. 推送组合后的 `Alpha`；
-5. dispatch `build-ebpf.yml`。
+5. dispatch `build-ebpf.yml`，构建 Android ARM64，并在全部检查通过后自动发布 prerelease。
+
+定时检查在两个上游都没有发布更新时不会制造重复 Release。手动运行 `Sync Smart and eBPF upstreams` 时，`force_build` 默认为 `true`：即使没有新的上游提交，也会针对当前 `Alpha` 自动构建并发布；关闭该选项则只做同步检查。也可以直接在 `Alpha` 上手动运行 `Build eBPF branch`，成功后同样会自动发布。
+
+Smart 上游偶尔会 rebase 或 force-push `Alpha`。自动化会区分三种关系：正常
+快进、历史重写和上游回退。历史重写仍会以普通三方合并接入，保留组合仓库
+已有的 eBPF 修改；若出现文件冲突则停止且不推送。候选提交是已记录基线的
+祖先时属于上游回退，自动化会拒绝更新，避免把已集成代码静默降级。
+
+工作流会先把候选 SHA 和关系写入 step outputs，再执行安全门禁，因此失败
+Issue 能显示实际候选。迁移分支若以 tree-port 方式引入了 Smart 内容、但还没有
+对应 Git 祖先关系，第一次后续同步会先用 `ours` merge 记录旧快照已集成，再只
+合并该快照之后的候选变化；这个标记提交不改变工作树。不能只改状态 JSON，
+否则下次增量合并没有可信的基线。
 
 失败时不推送部分结果，并创建或更新：
 
@@ -363,7 +360,7 @@ go vet ./...
 ```bash
 make ebpf_generate
 make ebpf_check
-CGO_ENABLED=1 go test -count=1 \
+CGO_ENABLED=0 go test -count=1 \
   -tags "with_gvisor with_ebpf" \
   ./common/ebpf/... ./listener/sing_ebpf/...
 ```
@@ -379,15 +376,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags with_gvisor .
 ### 7.4 内核与特权测试
 
 ```bash
-bash common/ebpf/check-kernel.sh --mode all
-
-sudo -E env SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=1 \
+sudo -E env SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=0 \
   go test -count=1 \
   -tags "with_gvisor with_ebpf ebpf_integration" \
   ./common/ebpf/... -run Integration
 ```
 
-GitHub hosted runner 可能因不开放所需 cgroup/BPF 权限而跳过真实流量测试。CI 的 SKIP 不等于目标 Android/Linux 设备已通过，最终仍需在实际设备验证。
+GitHub hosted runner 通常不开放所需 cgroup/BPF 权限，因此该 job 是建议性检查，不阻断 Android 构建和 Release。它会明确使用 `setup-go` 安装的 Go 路径，避免 `sudo` 回退到 runner 自带的旧 Go；最终仍需在实际 Android/Linux 设备完成特权验证。
 
 ### 7.5 设备验收
 
@@ -487,7 +482,7 @@ DNS 正常返回 fake-IP 后，BPF CIDR policy 在 mihomo 之前把这个地址�
 解决办法：
 
 - 从 eBPF `bypass-rule-set` 删除 `Private_IP`，普通 mihomo 路由规则仍可继续使用该规则集；
-- 使用 IPv6 fake-IP 时设置 `cgroup-ipv6-mode: always`；
+- 使用 IPv6 fake-IP 时设置 `local.ipv6-mode: always`；
 - 热点 TC 模式使用 IPv6 fake-IP 时设置 `bypass-private-address: false`；
 - 完全重启核心和浏览器，清除旧连接状态后再测试。
 
@@ -518,11 +513,11 @@ DNS 正常返回 fake-IP 后，BPF CIDR policy 在 mihomo 之前把这个地址�
 
 这是订阅响应头为空或格式错误，和 eBPF 数据路径无直接关系。不要把所有同时出现的 warning 都归因于内核。
 
-### 8.6 Go 1.20 构建报错 `package slices is not in GOROOT`
+### 8.6 使用 Go 1.24 或更旧版本构建失败
 
-组合仓库的 `go.mod` 仍以 Go 1.20 为最低版本，通用 Build/Test 工作流也保留 Go 1.20 矩阵，用于生成可运行在较旧 Windows 和 macOS 上的兼容产物。初次 eBPF 移植中的 `common/ebpf/shared_network_policy.go` 使用了 Go 1.21 才进入标准库的 `slices`，导致所有 Go 1.20 job 在编译阶段失败，而使用 Go 1.26 的专用 eBPF 工作流仍能通过。
+`v1.19.22-ebpf.3` 迁移后，主模块和测试模块的最低版本均为 Go 1.25.0，默认 CI/发布工具链使用 Go 1.26。Go 1.24 或更旧版本无法加载该模块属于预期行为，请升级工具链，不再通过降级标准库用法维持 Go 1.20 兼容产物。
 
-修复方式是使用 Go 1.20 已支持的 `sort.Slice` 完成相同的 IPv4/IPv6 host prefix 排序。修改该类公共文件时，不能只验证专用 eBPF 工作流；还必须确认通用工作流支持的最低 Go 版本。
+通用 Test 工作流只验证 Go 1.25 和 1.26；Build 与 eBPF Build 默认使用 Go 1.26。排障时先执行 `go version`，确认没有被系统 PATH、`GOTOOLCHAIN=local` 或旧缓存切回更早版本。
 
 ## 9. 推荐排障顺序
 
@@ -534,8 +529,8 @@ DNS 正常返回 fake-IP 后，BPF CIDR policy 在 mihomo 之前把这个地址�
 2. fake-IP 是否命中 `bypass-rule-set`；
 3. 是否命中 UID include/exclude；
 4. 目标应用是否处于所附加的 cgroup；
-5. 热点流量是否从 `include-interface` 指定接口进入；
-6. IPv6 是否因 `cgroup-ipv6-mode: auto` 被关闭；
+5. 热点流量是否从 `shared.interface` 指定接口进入；
+6. IPv6 是否因 `local.ipv6-mode: auto` 被关闭；
 7. QUIC UDP 443 是否被规则拒绝且浏览器没有正确回退；
 8. 浏览器是否仍保留旧连接、DNS 或 service worker 状态。
 
@@ -595,7 +590,7 @@ DNS 正常返回 fake-IP 后，BPF CIDR policy 在 mihomo 之前把这个地址�
 - `docs/ebpf-port-map.md`：移植文件映射；
 - `docs/ebpf-smart-port.md`：英文维护记录和验证 run；
 - `common/ebpf/README.md`：eBPF backend 实现说明；
-- `common/ebpf/check-kernel.sh`：目标内核能力探测；
+- `common/ebpf/kernel_probe.go`：纯 Go 目标内核能力探测；
 - `.github/workflows/build-ebpf.yml`：完整测试与构建；
 - `.github/workflows/release-ebpf.yml`：成功构建后的校验与自动 prerelease；
 - `.github/workflows/sync-upstreams.yml`：release 驱动的自动上游同步；
