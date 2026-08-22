@@ -2,9 +2,9 @@
   "smart": {
     "repository": "vernesong/mihomo",
     "branch": "Alpha",
-    "commit": "5664b1ba0943206e0fa140eb0f31f393688b0c2d",
+    "commit": "834a5063461e39359b5caf0caa609c75f7d72060",
     "release_tag": "Prerelease-Alpha",
-    "release_marker": "Prerelease-Alpha|2026-08-17T20:45:55Z|2026-08-17T20:45:55Z|128"
+    "release_marker": "Prerelease-Alpha|2026-08-21T06:05:54Z|2026-08-21T06:05:54Z|128"
   },
   "ebpf": {
     "repository": "TanakaLun/mihomo",
