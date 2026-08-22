@@ -47,6 +47,10 @@ socket-release workaround.
 `.github/upstream-state.json` records the Smart and eBPF commits and their
 current release markers. Future automation must compare from this baseline;
 it must not treat `.2` as still integrated.
+Because the migration is a tree-port, its recorded Smart snapshot is initially
+not a Git ancestor of the combined branch. The first released Smart update
+records that snapshot with an `ours` merge before integrating later changes;
+the marker changes commit topology only, not the migrated work tree.
 
 ## Validation status
 

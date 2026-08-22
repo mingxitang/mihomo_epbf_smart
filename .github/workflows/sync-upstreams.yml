@@ -65,8 +65,6 @@ jobs:
             "refs/tags/${ebpf_tag}:refs/remotes/ebpf-release/${ebpf_tag}"
           ebpf_sha="$(git rev-parse \
             "refs/remotes/ebpf-release/${ebpf_tag}^{commit}")"
-          git merge-base --is-ancestor "${ebpf_sha}" "${ebpf_branch_sha}" ||
-            { echo "Latest eBPF release is outside ${EBPF_BRANCH}" >&2; exit 1; }
 
           release_marker() {
             jq -r '[.tag_name, .updated_at,
@@ -79,6 +77,16 @@ jobs:
           old_smart_marker="$(jq -r '.smart.release_marker' "${STATE_FILE}")"
           old_ebpf_sha="$(jq -r '.ebpf.commit' "${STATE_FILE}")"
           old_ebpf_marker="$(jq -r '.ebpf.release_marker' "${STATE_FILE}")"
+          smart_relation=unchanged
+          if [ "${smart_sha}" != "${old_smart_sha}" ]; then
+            if git merge-base --is-ancestor "${old_smart_sha}" "${smart_sha}"; then
+              smart_relation=fast-forward
+            elif git merge-base --is-ancestor "${smart_sha}" "${old_smart_sha}"; then
+              smart_relation=rewind
+            else
+              smart_relation=rewritten
+            fi
+          fi
 
           smart_short="${smart_sha:0:7}"
           smart_asset_matches="$(jq --arg short "${smart_short}" \
@@ -88,19 +96,22 @@ jobs:
           if [ "${smart_sha}" != "${old_smart_sha}" ] &&
              [ "${smart_marker}" != "${old_smart_marker}" ] &&
              [ "${smart_asset_matches}" = true ]; then
-            git merge-base --is-ancestor "${old_smart_sha}" "${smart_sha}" ||
-              { echo "Smart history diverged after ${old_smart_sha}" >&2; exit 1; }
-            smart_ready=true
+            if [ "${smart_relation}" != rewind ]; then
+              smart_ready=true
+            fi
           fi
 
+          ebpf_relation=unchanged
           ebpf_ready=false
           if [ "${ebpf_sha}" != "${old_ebpf_sha}" ] &&
              [ "${ebpf_marker}" != "${old_ebpf_marker}" ]; then
             if git merge-base --is-ancestor "${old_ebpf_sha}" "${ebpf_sha}"; then
+              ebpf_relation=fast-forward
               ebpf_ready=true
-            elif ! git merge-base --is-ancestor "${ebpf_sha}" "${old_ebpf_sha}"; then
-              echo "eBPF release history diverged after ${old_ebpf_sha}" >&2
-              exit 1
+            elif git merge-base --is-ancestor "${ebpf_sha}" "${old_ebpf_sha}"; then
+              ebpf_relation=rewind
+            else
+              ebpf_relation=rewritten
             fi
           fi
 
@@ -113,19 +124,32 @@ jobs:
             echo "smart_ready=${smart_ready}"
             echo "smart_sha=${smart_sha}"
             echo "smart_marker=${smart_marker}"
+            echo "smart_relation=${smart_relation}"
             echo "ebpf_ready=${ebpf_ready}"
             echo "ebpf_sha=${ebpf_sha}"
             echo "ebpf_tag=${ebpf_tag}"
             echo "ebpf_marker=${ebpf_marker}"
+            echo "ebpf_relation=${ebpf_relation}"
           } >>"${GITHUB_OUTPUT}"
           {
             echo "## Upstream detection"
             echo
-            echo "| Upstream | Integrated | Candidate | Release ready |"
-            echo "| --- | --- | --- | --- |"
-            echo "| Smart | ${old_smart_sha} | ${smart_sha} | ${smart_ready} |"
-            echo "| eBPF | ${old_ebpf_sha} | ${ebpf_sha} | ${ebpf_ready} |"
+            echo "| Upstream | Integrated | Candidate | Relation | Release ready |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| Smart | ${old_smart_sha} | ${smart_sha} | ${smart_relation} | ${smart_ready} |"
+            echo "| eBPF | ${old_ebpf_sha} | ${ebpf_sha} | ${ebpf_relation} | ${ebpf_ready} |"
           } >>"${GITHUB_STEP_SUMMARY}"
+
+          git merge-base --is-ancestor "${ebpf_sha}" "${ebpf_branch_sha}" ||
+            { echo "Latest eBPF release is outside ${EBPF_BRANCH}" >&2; exit 1; }
+          [ "${smart_relation}" != rewind ] || {
+            echo "Smart release moved backward from ${old_smart_sha} to ${smart_sha}" >&2
+            exit 1
+          }
+          [ "${ebpf_relation}" != rewritten ] || {
+            echo "eBPF release history diverged after ${old_ebpf_sha}" >&2
+            exit 1
+          }
 
       - name: Merge released changes
         if: steps.detect.outputs.changed == 'true'
@@ -137,6 +161,16 @@ jobs:
             "41898282+github-actions[bot]@users.noreply.github.com"
 
           if [ "${{ steps.detect.outputs.smart_ready }}" = true ]; then
+            old_smart_sha="$(jq -r '.smart.commit' "${STATE_FILE}")"
+            if ! git merge-base --is-ancestor "${old_smart_sha}" HEAD; then
+              git merge --strategy=ours --no-edit \
+                -m "chore: mark integrated Smart snapshot ${old_smart_sha}" \
+                "${old_smart_sha}"
+            fi
+            if [ "${{ steps.detect.outputs.smart_relation }}" = rewritten ]; then
+              echo "Smart rewrote history; merging the released snapshot with conflict protection." \
+                >>"${GITHUB_STEP_SUMMARY}"
+            fi
             git merge --no-edit --no-ff "${{ steps.detect.outputs.smart_sha }}"
             jq --arg commit "${{ steps.detect.outputs.smart_sha }}" \
               --arg marker "${{ steps.detect.outputs.smart_marker }}" \
@@ -197,7 +231,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SMART_SHA: ${{ steps.detect.outputs.smart_sha }}
+          SMART_RELATION: ${{ steps.detect.outputs.smart_relation }}
           EBPF_SHA: ${{ steps.detect.outputs.ebpf_sha }}
+          EBPF_RELATION: ${{ steps.detect.outputs.ebpf_relation }}
         shell: bash
         run: |
           set -euo pipefail
@@ -209,7 +245,9 @@ jobs:
             echo "Automatic upstream integration failed."
             echo
             echo "- Smart candidate: ${SMART_SHA}"
+            echo "- Smart relation: ${SMART_RELATION}"
             echo "- eBPF candidate: ${EBPF_SHA}"
+            echo "- eBPF relation: ${EBPF_RELATION}"
             echo "- Workflow run: ${run_url}"
             echo
             echo "Conflicting files:"

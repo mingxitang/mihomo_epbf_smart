@@ -301,6 +301,17 @@ ebpf-alpha-YYYYMMDD-rRUN_ID-COMMIT_SHA前12位
 
 定时检查在两个上游都没有发布更新时不会制造重复 Release。手动运行 `Sync Smart and eBPF upstreams` 时，`force_build` 默认为 `true`：即使没有新的上游提交，也会针对当前 `Alpha` 自动构建并发布；关闭该选项则只做同步检查。也可以直接在 `Alpha` 上手动运行 `Build eBPF branch`，成功后同样会自动发布。
 
+Smart 上游偶尔会 rebase 或 force-push `Alpha`。自动化会区分三种关系：正常
+快进、历史重写和上游回退。历史重写仍会以普通三方合并接入，保留组合仓库
+已有的 eBPF 修改；若出现文件冲突则停止且不推送。候选提交是已记录基线的
+祖先时属于上游回退，自动化会拒绝更新，避免把已集成代码静默降级。
+
+工作流会先把候选 SHA 和关系写入 step outputs，再执行安全门禁，因此失败
+Issue 能显示实际候选。迁移分支若以 tree-port 方式引入了 Smart 内容、但还没有
+对应 Git 祖先关系，第一次后续同步会先用 `ours` merge 记录旧快照已集成，再只
+合并该快照之后的候选变化；这个标记提交不改变工作树。不能只改状态 JSON，
+否则下次增量合并没有可信的基线。
+
 失败时不推送部分结果，并创建或更新：
 
 ```text
