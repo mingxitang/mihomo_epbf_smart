@@ -26,10 +26,9 @@ type sharedNetworkRuntime struct {
 	programs                    []*CiliumEBPF.Program
 	control_map_fd              int
 	stats_map_fd                int
-	original_to_token_map_fd    int
+	flow_by_original_map_fd     int
 	bypass_flow_map_fd          int
-	reply_map_fd                int
-	listener_map_fd             int
+	flow_by_token_map_fd        int
 	fragment_map_fd             int
 	host_ipv4_map_fd            int
 	host_ipv6_map_fd            int
@@ -50,10 +49,12 @@ type SharedNetworkBackend struct {
 	access              sync.RWMutex
 	health              backendHealth
 	flowAccess          sync.Mutex
+	replyTokenSequence  atomic.Uint64
 	flowReferences      map[SharedNetworkFlowHandle]uint32
 	flowSweepAccess     sync.Mutex
 	flowSweepScratch    mapScanScratch[sharedNetworkOriginalKey, sharedNetworkTokenValue]
 	flowSweepCandidates []sharedNetworkFlowEntry
+	flowSweepRemoved    uint32
 	proxyUsage          atomic.Uint32
 	proxyUsageKnown     atomic.Bool
 	statusCollector     runtimeStatusCollector
@@ -63,10 +64,14 @@ type SharedNetworkBackend struct {
 	control             sharedNetworkControl
 	hostIPv4            []netip.Prefix
 	hostIPv6            []netip.Prefix
+	bypassIPv4Map       *CiliumEBPF.Map
+	bypassIPv6Map       *CiliumEBPF.Map
 	bypassIPv4MapFD     int
 	bypassIPv6MapFD     int
 	bypassIPv4CIDR      []netip.Prefix
 	bypassIPv6CIDR      []netip.Prefix
+	bypassIPv4Count     int
+	bypassIPv6Count     int
 	includeSourceIPv4   []netip.Prefix
 	includeSourceIPv6   []netip.Prefix
 	excludeSourceIPv4   []netip.Prefix
@@ -94,6 +99,10 @@ func PrepareSharedNetwork(cgroupBackend *CgroupBackend, config SharedNetworkConf
 		if err := validateMapCapacity(name, capacity); err != nil {
 			return nil, err
 		}
+	}
+	if len(config.IncludeSourceMAC) > maxSharedSourceMACPolicyEntries ||
+		len(config.ExcludeSourceMAC) > maxSharedSourceMACPolicyEntries {
+		return nil, E.New("shared-network source MAC policy exceeds eBPF map capacity")
 	}
 	if config.ListenerPort == 0 {
 		return nil, E.New("missing shared-network listener port")
@@ -144,7 +153,14 @@ func PrepareSharedNetwork(cgroupBackend *CgroupBackend, config SharedNetworkConf
 		bypassIPv4Map = cgroupBackend.runtime.maps["cgroup_bypass_ipv4"]
 		bypassIPv6Map = cgroupBackend.runtime.maps["cgroup_bypass_ipv6"]
 	}
-	err = prepareSharedNetworkRuntime(runtimeState, config.MapCapacity, bypassIPv4Map, bypassIPv6Map)
+	err = prepareSharedNetworkRuntime(
+		runtimeState,
+		config.MapCapacity,
+		len(config.IncludeSourceMAC),
+		len(config.ExcludeSourceMAC),
+		bypassIPv4Map,
+		bypassIPv6Map,
+	)
 	if cgroupBackend != nil {
 		cgroupBackend.access.RUnlock()
 	}
@@ -161,6 +177,12 @@ func PrepareSharedNetwork(cgroupBackend *CgroupBackend, config SharedNetworkConf
 		}
 		return nil, prepareErr
 	}
+	if bypassIPv4Map == nil {
+		bypassIPv4Map = runtimeState.maps["shared_bypass_ipv4"]
+	}
+	if bypassIPv6Map == nil {
+		bypassIPv6Map = runtimeState.maps["shared_bypass_ipv6"]
+	}
 
 	bypassIPv4MapFD := runtimeState.fallback_bypass_ipv4_map_fd
 	bypassIPv6MapFD := runtimeState.fallback_bypass_ipv6_map_fd
@@ -174,6 +196,8 @@ func PrepareSharedNetwork(cgroupBackend *CgroupBackend, config SharedNetworkConf
 		mapCapacity:     config.MapCapacity,
 		runtime:         runtimeState,
 		statsMapFD:      runtimeState.stats_map_fd,
+		bypassIPv4Map:   bypassIPv4Map,
+		bypassIPv6Map:   bypassIPv6Map,
 		bypassIPv4MapFD: bypassIPv4MapFD,
 		bypassIPv6MapFD: bypassIPv6MapFD,
 	}
@@ -232,6 +256,8 @@ func PrepareSharedNetwork(cgroupBackend *CgroupBackend, config SharedNetworkConf
 func prepareSharedNetworkRuntime(
 	runtimeState *sharedNetworkRuntime,
 	capacity SharedNetworkMapCapacities,
+	includeSourceMACEntries int,
+	excludeSourceMACEntries int,
 	bypassIPv4Map *CiliumEBPF.Map,
 	bypassIPv6Map *CiliumEBPF.Map,
 ) error {
@@ -239,19 +265,18 @@ func prepareSharedNetworkRuntime(
 	runtimeState.maps, err = loadObjectMaps(loadSharedNetwork, map[string]mapSpecOverride{
 		"shared_control":             {name: "sb_sh_control", mapType: CiliumEBPF.Array, maxEntries: 1},
 		"shared_stats":               {name: "sb_sh_stats", mapType: CiliumEBPF.Array, maxEntries: 1},
-		"shared_original_to_token":   {name: "sb_sh_orig", mapType: CiliumEBPF.Hash, maxEntries: capacity.Proxy, flags: bpfFlagNoPrealloc},
+		"shared_flow_by_original":    {name: "sb_sh_orig", mapType: CiliumEBPF.Hash, maxEntries: capacity.Proxy, flags: bpfFlagNoPrealloc},
 		"shared_bypass_flow":         {name: "sb_sh_bypass", mapType: CiliumEBPF.LRUHash, maxEntries: capacity.Bypass},
-		"shared_reply":               {name: "sb_sh_reply", mapType: CiliumEBPF.Hash, maxEntries: capacity.Proxy, flags: bpfFlagNoPrealloc},
-		"shared_listener":            {name: "sb_sh_listener", mapType: CiliumEBPF.Hash, maxEntries: capacity.Proxy, flags: bpfFlagNoPrealloc},
+		"shared_flow_by_token":       {name: "sb_sh_token", mapType: CiliumEBPF.Hash, maxEntries: capacity.Proxy, flags: bpfFlagNoPrealloc},
 		"shared_fragment":            {name: "sb_sh_fragment", mapType: CiliumEBPF.LRUHash, maxEntries: capacity.Fragment},
-		"shared_host_ipv4":           {name: "sb_sh_host4", mapType: CiliumEBPF.Hash, maxEntries: 256},
-		"shared_host_ipv6":           {name: "sb_sh_host6", mapType: CiliumEBPF.Hash, maxEntries: 256},
+		"shared_host_ipv4":           {name: "sb_sh_host4", mapType: CiliumEBPF.Hash, maxEntries: maxHostAddressPolicyEntries, flags: bpfFlagNoPrealloc},
+		"shared_host_ipv6":           {name: "sb_sh_host6", mapType: CiliumEBPF.Hash, maxEntries: maxHostAddressPolicyEntries, flags: bpfFlagNoPrealloc},
 		"shared_include_source_ipv4": {name: "sb_sh_inc4", mapType: CiliumEBPF.LPMTrie, maxEntries: maxSharedSourceCIDRPolicyEntries, flags: bpfFlagNoPrealloc},
 		"shared_include_source_ipv6": {name: "sb_sh_inc6", mapType: CiliumEBPF.LPMTrie, maxEntries: maxSharedSourceCIDRPolicyEntries, flags: bpfFlagNoPrealloc},
 		"shared_exclude_source_ipv4": {name: "sb_sh_exc4", mapType: CiliumEBPF.LPMTrie, maxEntries: maxSharedSourceCIDRPolicyEntries, flags: bpfFlagNoPrealloc},
 		"shared_exclude_source_ipv6": {name: "sb_sh_exc6", mapType: CiliumEBPF.LPMTrie, maxEntries: maxSharedSourceCIDRPolicyEntries, flags: bpfFlagNoPrealloc},
-		"shared_include_source_mac":  {name: "sb_sh_inmac", mapType: CiliumEBPF.Hash, maxEntries: maxSharedSourceMACPolicyEntries},
-		"shared_exclude_source_mac":  {name: "sb_sh_exmac", mapType: CiliumEBPF.Hash, maxEntries: maxSharedSourceMACPolicyEntries},
+		"shared_include_source_mac":  {name: "sb_sh_inmac", mapType: CiliumEBPF.Hash, maxEntries: sharedSourceMACMapCapacity(includeSourceMACEntries)},
+		"shared_exclude_source_mac":  {name: "sb_sh_exmac", mapType: CiliumEBPF.Hash, maxEntries: sharedSourceMACMapCapacity(excludeSourceMACEntries)},
 		"shared_scratch":             {name: "sb_sh_scratch", mapType: CiliumEBPF.PerCPUArray, maxEntries: 1},
 	})
 	if err != nil {
@@ -287,10 +312,9 @@ func prepareSharedNetworkRuntime(
 	runtimeState.programs = programs
 	runtimeState.control_map_fd = runtimeState.maps["shared_control"].FD()
 	runtimeState.stats_map_fd = runtimeState.maps["shared_stats"].FD()
-	runtimeState.original_to_token_map_fd = runtimeState.maps["shared_original_to_token"].FD()
+	runtimeState.flow_by_original_map_fd = runtimeState.maps["shared_flow_by_original"].FD()
 	runtimeState.bypass_flow_map_fd = runtimeState.maps["shared_bypass_flow"].FD()
-	runtimeState.reply_map_fd = runtimeState.maps["shared_reply"].FD()
-	runtimeState.listener_map_fd = runtimeState.maps["shared_listener"].FD()
+	runtimeState.flow_by_token_map_fd = runtimeState.maps["shared_flow_by_token"].FD()
 	runtimeState.fragment_map_fd = runtimeState.maps["shared_fragment"].FD()
 	runtimeState.host_ipv4_map_fd = runtimeState.maps["shared_host_ipv4"].FD()
 	runtimeState.host_ipv6_map_fd = runtimeState.maps["shared_host_ipv6"].FD()
@@ -304,6 +328,13 @@ func prepareSharedNetworkRuntime(
 	runtimeState.ingress_prog_fd = programs[sharedNetworkProgramIngress].FD()
 	runtimeState.egress_prog_fd = programs[sharedNetworkProgramEgress].FD()
 	return nil
+}
+
+func sharedSourceMACMapCapacity(entries int) uint32 {
+	if entries <= 0 {
+		return 1
+	}
+	return uint32(entries)
 }
 
 func createSharedBypassMap(runtimeState *sharedNetworkRuntime, objectName string, kernelName string) error {
@@ -407,6 +438,34 @@ func (b *SharedNetworkBackend) EgressProgramFD() int {
 	return b.runtime.egress_prog_fd
 }
 
+func (b *SharedNetworkBackend) IngressProgramIdentity() (int, string) {
+	return b.programIdentity(sharedNetworkProgramIngress)
+}
+
+func (b *SharedNetworkBackend) EgressProgramIdentity() (int, string) {
+	return b.programIdentity(sharedNetworkProgramEgress)
+}
+
+func (b *SharedNetworkBackend) programIdentity(index int) (int, string) {
+	if b == nil {
+		return 0, ""
+	}
+	b.access.RLock()
+	defer b.access.RUnlock()
+	if b.runtime == nil || index < 0 || index >= len(b.runtime.programs) || b.runtime.programs[index] == nil {
+		return 0, ""
+	}
+	info, err := b.runtime.programs[index].Info()
+	if err != nil {
+		return 0, ""
+	}
+	id, ok := info.ID()
+	if !ok {
+		return 0, info.Tag
+	}
+	return int(id), info.Tag
+}
+
 func (b *SharedNetworkBackend) RuntimeStatus() SharedNetworkRuntimeStatus {
 	if b == nil {
 		return SharedNetworkRuntimeStatus{}
@@ -447,6 +506,8 @@ func (b *SharedNetworkBackend) Close() error {
 	b.runtime = nil
 	b.hostIPv4 = nil
 	b.hostIPv6 = nil
+	b.bypassIPv4Map = nil
+	b.bypassIPv6Map = nil
 	b.bypassIPv4MapFD = -1
 	b.bypassIPv6MapFD = -1
 	b.bypassIPv4CIDR = nil

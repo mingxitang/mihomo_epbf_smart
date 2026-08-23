@@ -56,6 +56,8 @@ type tcpTracker struct {
 	manager *Manager
 
 	pushToManager bool `json:"-"`
+	closeOnce     sync.Once
+	closeErr      error
 
 	uploadBucketWindow   *bucketWindow
 	downloadBucketWindow *bucketWindow
@@ -134,9 +136,11 @@ func (tt *tcpTracker) UnwrapWriter() (io.Writer, []N.CountFunc) {
 }
 
 func (tt *tcpTracker) Close() error {
-	connErr := tt.Conn.Close()
-	tt.manager.Leave(tt)
-	return connErr
+	tt.closeOnce.Do(func() {
+		tt.closeErr = tt.Conn.Close()
+		tt.manager.Leave(tt)
+	})
+	return tt.closeErr
 }
 
 func (tt *tcpTracker) Upstream() any {
@@ -192,6 +196,8 @@ type udpTracker struct {
 	manager *Manager
 
 	pushToManager bool `json:"-"`
+	closeOnce     sync.Once
+	closeErr      error
 
 	uploadBucketWindow   *bucketWindow
 	downloadBucketWindow *bucketWindow
@@ -239,9 +245,11 @@ func (ut *udpTracker) WriteTo(b []byte, addr net.Addr) (int, error) {
 }
 
 func (ut *udpTracker) Close() error {
-	connErr := ut.PacketConn.Close()
-	ut.manager.Leave(ut)
-	return connErr
+	ut.closeOnce.Do(func() {
+		ut.closeErr = ut.PacketConn.Close()
+		ut.manager.Leave(ut)
+	})
+	return ut.closeErr
 }
 
 func (ut *udpTracker) Upstream() any {

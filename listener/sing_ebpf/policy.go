@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 
+	ECommon "github.com/metacubex/mihomo/common/ebpf"
 	"github.com/metacubex/mihomo/component/resolver"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
@@ -83,8 +84,20 @@ func (i *Inbound) currentBypassCIDR() []netip.Prefix {
 	return slices.Clone(i.bypassCIDR)
 }
 
-func (i *Inbound) refreshBypassCIDRsLocked() (bool, error) {
+func (i *Inbound) refreshHostAddresses(backend *ECommon.CgroupBackend) error {
 	prefixes := localInterfacePrefixes()
+	addresses := make([]netip.Addr, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		addresses = append(addresses, prefix.Addr())
+	}
+	if err := backend.UpdateHostAddresses(addresses); err != nil {
+		return E.Cause(err, "update eBPF local interface host addresses")
+	}
+	return nil
+}
+
+func (i *Inbound) refreshBypassCIDRsLocked() (bool, error) {
+	var prefixes []netip.Prefix
 	for _, ruleSet := range i.bypassRuleSet {
 		strategy := ruleSet.Strategy()
 		ipCidrStrategy, ok := strategy.(toIpCidr)
@@ -101,6 +114,9 @@ func (i *Inbound) refreshBypassCIDRsLocked() (bool, error) {
 	if backend == nil {
 		return false, E.New("eBPF backend is not initialized")
 	}
+	if err := i.refreshHostAddresses(backend); err != nil {
+		return false, err
+	}
 	updated, err := backend.UpdateBypassCIDR(prefixes)
 	if err != nil {
 		return false, err
@@ -111,7 +127,8 @@ func (i *Inbound) refreshBypassCIDRsLocked() (bool, error) {
 	// follow the effective CIDR set (including runtime bypass_rule_set changes).
 	if i.sharedNetwork != nil {
 		if sharedBackend := i.sharedNetwork.sharedBackendInstance(); sharedBackend != nil && !sharedBackend.IsClosed() {
-			if stateErr := sharedBackend.SetBypassCIDRState(prefixes); stateErr != nil {
+			ipv4Count, ipv6Count := backend.BypassCIDRCount()
+			if stateErr := sharedBackend.SetBypassCIDRState(ipv4Count, ipv6Count); stateErr != nil {
 				log.Errorln("[EBPF] refresh shared-network bypass CIDR state: %s", stateErr.Error())
 			}
 		}

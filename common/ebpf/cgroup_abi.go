@@ -12,18 +12,28 @@ import (
 )
 
 const (
-	ProtocolTCP                  = 6
-	ProtocolUDP                  = 17
-	TCPRedirectMapCapacity       = 65536
-	UDPRedirectMapCapacity       = 65536
-	SocketBypassMapCapacity      = 65536
-	SharedNetworkMapCapacity     = 65536
-	UDPRecoveryMapCapacity       = 4096
-	MaxConfigurableMapCapacity   = 1 << 20
-	cgroupStatTCPRedirectFailure = 0
-	cgroupStatUDPRedirectFailure
-	udpFlowActionProxy  = 1
-	udpFlowActionBypass = 2
+	ProtocolTCP                   = 6
+	ProtocolUDP                   = 17
+	TCPRedirectMapCapacity        = 32768
+	UDPRedirectMapCapacity        = 32768
+	UDPPeerMapCapacity            = 16384
+	UDPFlowMapCapacity            = 16384
+	SocketBypassMapCapacity       = 32768
+	SharedNetworkProxyCapacity    = 32768
+	SharedNetworkBypassCapacity   = 16384
+	SharedNetworkFragmentCapacity = 8192
+	UDPRecoveryMapCapacity        = 8192
+	MaxConfigurableMapCapacity    = 1 << 20
+	// These mirror SB_EBPF_CGROUP_STAT_* in native/abi.h and index the
+	// cgroup_stats array map. Both values must be written out: a bare
+	// identifier in a const block without iota repeats the previous
+	// expression, which silently aliased UDP onto the TCP slot and made
+	// udp_redirect_reservation_failures report the TCP counter.
+	cgroupStatTCPRedirectFailure        = 0
+	cgroupStatUDPRedirectFailure        = 1
+	originalDestinationFlagConnectedUDP = 1
+	udpFlowActionProxy                  = 1
+	udpFlowActionBypass                 = 2
 
 	addressFamilyIPv4 = 2
 	addressFamilyIPv6 = 10
@@ -86,6 +96,8 @@ func cgroupIPv4Redirect(prefix netip.Prefix) (uint32, uint32) {
 type CgroupMapCapacity struct {
 	TCPRedirect  uint32
 	UDPRedirect  uint32
+	UDPPeer      uint32
+	UDPFlow      uint32
 	SocketBypass uint32
 }
 
@@ -95,9 +107,17 @@ type MapUsage struct {
 }
 
 type CgroupTCPRedirectSweepResult struct {
-	Scanned uint32
-	Removed uint32
-	Usage   MapUsage
+	Scanned  uint32
+	Removed  uint32
+	Usage    MapUsage
+	Complete bool
+}
+
+type CgroupUDPRedirectSweepResult struct {
+	Scanned  uint32
+	Removed  uint32
+	Usage    MapUsage
+	Complete bool
 }
 
 type SharedNetworkMapCapacities struct {
@@ -108,9 +128,9 @@ type SharedNetworkMapCapacities struct {
 
 func DefaultSharedNetworkMapCapacities() SharedNetworkMapCapacities {
 	return SharedNetworkMapCapacities{
-		Proxy:    SharedNetworkMapCapacity,
-		Bypass:   SharedNetworkMapCapacity,
-		Fragment: SharedNetworkMapCapacity,
+		Proxy:    SharedNetworkProxyCapacity,
+		Bypass:   SharedNetworkBypassCapacity,
+		Fragment: SharedNetworkFragmentCapacity,
 	}
 }
 
@@ -134,6 +154,8 @@ func DefaultCgroupMapCapacity() CgroupMapCapacity {
 	return CgroupMapCapacity{
 		TCPRedirect:  TCPRedirectMapCapacity,
 		UDPRedirect:  UDPRedirectMapCapacity,
+		UDPPeer:      UDPPeerMapCapacity,
+		UDPFlow:      UDPFlowMapCapacity,
 		SocketBypass: SocketBypassMapCapacity,
 	}
 }
@@ -201,8 +223,33 @@ func originalDestinationFromValue(original originalDestinationValue) (OriginalDe
 	}
 	return OriginalDestination{
 		Destination:  netip.AddrPortFrom(address.Unmap(), original.Port),
-		ConnectedUDP: original.Flags&1 != 0,
+		ConnectedUDP: original.Flags&originalDestinationFlagConnectedUDP != 0,
 	}, nil
+}
+
+func originalDestinationFromUDPPeer(cookie uint64, peer udpPeerValue) (originalDestinationValue, error) {
+	if cookie == 0 {
+		return originalDestinationValue{}, E.New("invalid connected UDP socket cookie")
+	}
+	if peer.Protocol != ProtocolUDP {
+		return originalDestinationValue{}, E.New("invalid connected UDP peer protocol: ", peer.Protocol)
+	}
+	value := originalDestinationValue{
+		Family:       peer.Family,
+		Protocol:     ProtocolUDP,
+		Port:         peer.Port,
+		Addr:         peer.Addr,
+		Flags:        originalDestinationFlagConnectedUDP,
+		SocketCookie: cookie,
+	}
+	original, err := originalDestinationFromValue(value)
+	if err != nil {
+		return originalDestinationValue{}, err
+	}
+	if !original.Destination.IsValid() || original.Destination.Port() == 0 || original.Destination.Addr().IsUnspecified() {
+		return originalDestinationValue{}, E.New("invalid connected UDP peer destination: ", original.Destination)
+	}
+	return value, nil
 }
 
 func makeListenerLookupKey(protocol uint8, listenerDestination netip.AddrPort) (listenerLookupKey, error) {

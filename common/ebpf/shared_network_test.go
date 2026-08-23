@@ -22,10 +22,7 @@ func TestSharedNetworkABI(t *testing.T) {
 	if size := unsafe.Sizeof(sharedNetworkMACKey{}); size != 8 {
 		t.Fatalf("unexpected shared-network MAC key size: %d", size)
 	}
-	if size := unsafe.Sizeof(sharedNetworkReplyKey{}); size != 44 {
-		t.Fatalf("unexpected shared-network reply key size: %d", size)
-	}
-	if size := unsafe.Sizeof(sharedNetworkOriginalValue{}); size != 36 {
+	if size := unsafe.Sizeof(sharedNetworkOriginalValue{}); size != 40 {
 		t.Fatalf("unexpected shared-network original value size: %d", size)
 	}
 	if size := unsafe.Sizeof(sharedNetworkTokenValue{}); size != 40 {
@@ -52,6 +49,18 @@ func TestSharedNetworkABI(t *testing.T) {
 	}
 	if sharedNetworkPolicyFlags != 0x5fe0 {
 		t.Fatalf("unexpected shared-network policy flags: %#x", sharedNetworkPolicyFlags)
+	}
+}
+
+func TestSharedSourceMACMapCapacity(t *testing.T) {
+	for entries, expected := range map[int]uint32{
+		0: 1,
+		1: 1,
+		8: 8,
+	} {
+		if capacity := sharedSourceMACMapCapacity(entries); capacity != expected {
+			t.Fatalf("unexpected source MAC map capacity for %d entries: %d", entries, capacity)
+		}
 	}
 }
 
@@ -121,21 +130,26 @@ func TestMakeSharedNetworkFlowHandle(t *testing.T) {
 		Protocol:       ProtocolUDP,
 		Port:           original.Port(),
 		InterfaceIndex: 42,
+		Generation:     99,
 		SourceMAC:      [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01},
 	}
 	copy(value.Addr[:], original.Addr().AsSlice())
 	flow := makeSharedNetworkFlowHandle(key, value)
 	if flow.originalKey.InterfaceIndex != 42 ||
 		flow.originalKey.OriginalPort != original.Port() ||
-		flow.replyKey.InterfaceIndex != 42 ||
-		flow.replyKey.ListenerPort != tokenDestination.Port() ||
-		flow.listenerKey != key {
+		flow.listenerKey != key ||
+		flow.generation != 99 {
 		t.Fatalf("unexpected shared-network flow: %+v", flow)
 	}
 	if actual := sharedNetworkOriginalMAC(value); actual.String() != "02:00:00:00:00:01" {
 		t.Fatalf("unexpected source MAC: %s", actual)
 	}
-	fromOriginal := makeSharedNetworkFlowHandleFromOriginal(flow.originalKey, flow.listenerKey.TokenAddr, tokenDestination.Port())
+	fromOriginal := makeSharedNetworkFlowHandleFromOriginal(
+		flow.originalKey,
+		flow.listenerKey.TokenAddr,
+		tokenDestination.Port(),
+		flow.generation,
+	)
 	if fromOriginal != flow {
 		t.Fatalf("reconstructed shared-network flow differs: got=%+v want=%+v", fromOriginal, flow)
 	}

@@ -75,8 +75,11 @@ func (s *sharedNetwork) Start(cgroupBackend *ECommon.CgroupBackend) error {
 		if _, err = backend.UpdateBypassCIDR(s.inbound.currentBypassCIDR()); err != nil {
 			return E.Errors(err, s.Close())
 		}
-	} else if err = backend.SetBypassCIDRState(s.inbound.currentBypassCIDR()); err != nil {
-		return E.Errors(err, s.Close())
+	} else {
+		ipv4Count, ipv6Count := cgroupBackend.BypassCIDRCount()
+		if err = backend.SetBypassCIDRState(ipv4Count, ipv6Count); err != nil {
+			return E.Errors(err, s.Close())
+		}
 	}
 	s.tcManager = &sharedTCManager{
 		backend:     backend,
@@ -152,6 +155,17 @@ func (s *sharedNetwork) udpPeriodicLoop(stop <-chan struct{}, done chan<- struct
 			return
 		case <-ticker.C:
 			s.udpClientTable.sweep(time.Now(), s.inbound.udpTimeout, s.releaseFlows)
+			if backend := s.sharedBackendInstance(); backend != nil && !backend.IsClosed() {
+				idle := 2 * s.inbound.udpTimeout
+				if idle < 30*time.Second {
+					idle = 30 * time.Second
+				}
+				if result, sweepErr := backend.SweepOrphanedFlows(idle, 1024); sweepErr != nil {
+					s.udpWarnings.cleanup.warn(s.inbound.logWarn, "sweep orphaned shared-network flows: ", sweepErr)
+				} else if result.Removed > 0 {
+					log.Debugln("[EBPF] swept %d orphaned shared-network flows", result.Removed)
+				}
+			}
 		}
 	}
 }
@@ -172,11 +186,13 @@ func (s *sharedNetwork) Close() error {
 	s.lifecycleAccess.Lock()
 	defer s.lifecycleAccess.Unlock()
 	s.stopUDPPeriodic()
+	var closeErr error
 	if s.tcManager != nil {
-		if err := s.tcManager.Close(); err != nil {
-			return err
+		tcErr := s.tcManager.Close()
+		closeErr = E.Errors(closeErr, tcErr)
+		if tcErr == nil {
+			s.tcManager = nil
 		}
-		s.tcManager = nil
 	}
 	var backendErr error
 	if backend := s.sharedBackendInstance(); backend != nil {
@@ -185,7 +201,7 @@ func (s *sharedNetwork) Close() error {
 			s.setSharedBackend(nil)
 		}
 	}
-	return E.Errors(backendErr, s.closeListeners())
+	return E.Errors(closeErr, backendErr, s.closeListeners())
 }
 
 func (s *sharedNetwork) closeListeners() error {

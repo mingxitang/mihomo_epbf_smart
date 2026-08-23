@@ -1,5 +1,26 @@
 # eBPF v1.19.22-ebpf.3 migration
 
+## Post-migration correctness fixes
+
+- Local interface addresses are stored only in the dedicated host-address
+  maps as exact IPv4 `/32` or IPv6 `/128` entries.
+- `bypass-rule-set` CIDRs are stored only in the bypass LPM maps. An interface
+  such as `192.168.1.5/24` no longer bypasses the whole `192.168.1.0/24`
+  subnet unless a rule set requests it.
+- Shared-network attachments are reconciled per interface, verified against
+  kernel TC state, and repaired without disabling healthy interfaces.
+- Downstream `arp_announce` is raised while shared-network interception is
+  active and restored on detach, preventing redirected `127.x` sources from
+  poisoning ARP resolution.
+- TCX cleanup retries are bounded to avoid an unbounded file-descriptor leak.
+- TCP and UDP statistic tracker shutdown is idempotent.
+- Cgroup TCP redirect, UDP redirect, UDP token, and UDP peer maps are bounded
+  LRU maps. Independent eviction is validated before cached state is reused.
+- The periodic inbound maintenance loop sweeps stale TCP and UDP redirects in
+  bounded batches, preventing permanent exhaustion and later `EPERM` failures.
+- Connected UDP recovery validates token/peer ownership, retains recoverable
+  state across failed recovery writes, and bounds reverse token scans.
+
 ## Target
 
 The migration branch `migration/ebpf-v1.19.22-ebpf.3` combines:

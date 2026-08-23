@@ -17,6 +17,11 @@
 #define SB_SHARED_FRAGMENT_FIRST 1U
 #define SB_SHARED_FRAGMENT_LATER 2U
 
+// TCX only continues with later TCX programs and the legacy clsact chain for
+// TC_ACT_UNSPEC. TC_ACT_PIPE stops the TCX program array before being mapped
+// to "next", which can skip tethering programs attached after sing-box.
+#define SB_SHARED_ACT_CONTINUE TC_ACT_UNSPEC
+
 #ifndef BPF_F_MARK_MANGLED_0
 #define BPF_F_MARK_MANGLED_0 (1ULL << 5)
 #endif
@@ -31,15 +36,14 @@
 
 EXTERNAL_MAP(shared_control, __u32, struct sb_shared_control, 1U);
 EXTERNAL_MAP(shared_stats, __u32, __u64, SB_SHARED_STAT_COUNT);
-EXTERNAL_MAP(shared_original_to_token, struct sb_shared_original_key, struct sb_shared_token_value, SB_SHARED_NETWORK_OBJECT_MAP_ENTRIES);
+EXTERNAL_MAP(shared_flow_by_original, struct sb_shared_original_key, struct sb_shared_token_value, SB_SHARED_NETWORK_OBJECT_MAP_ENTRIES);
 struct bpf_map_def SEC("maps") shared_bypass_flow = {
     .type = BPF_MAP_TYPE_LRU_HASH,
     .key_size = sizeof(struct sb_shared_original_key),
     .value_size = sizeof(struct sb_shared_bypass_flow_value),
     .max_entries = SB_SHARED_NETWORK_OBJECT_MAP_ENTRIES,
 };
-EXTERNAL_MAP(shared_reply, struct sb_shared_reply_key, struct sb_shared_reply_value, SB_SHARED_NETWORK_OBJECT_MAP_ENTRIES);
-EXTERNAL_MAP(shared_listener, struct sb_shared_listener_key, struct sb_shared_original_value, SB_SHARED_NETWORK_OBJECT_MAP_ENTRIES);
+EXTERNAL_MAP(shared_flow_by_token, struct sb_shared_listener_key, struct sb_shared_original_value, SB_SHARED_NETWORK_OBJECT_MAP_ENTRIES);
 struct bpf_map_def SEC("maps") shared_fragment = {
     .type = BPF_MAP_TYPE_LRU_HASH,
     .key_size = sizeof(struct sb_shared_fragment_key),
@@ -222,8 +226,8 @@ NOINLINE int ingress_ipv4(
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ipv4_header *ip = data + l3_offset;
-    if ((void *)(ip + 1) > data_end || ip->version != 4U || ip->ihl < 5U) return TC_ACT_PIPE;
-    if (!selected_protocol(ip->protocol, control)) return TC_ACT_PIPE;
+    if ((void *)(ip + 1) > data_end || ip->version != 4U || ip->ihl < 5U) return SB_SHARED_ACT_CONTINUE;
+    if (!selected_protocol(ip->protocol, control)) return SB_SHARED_ACT_CONTINUE;
     __u16 fragment = swap16(ip->fragment_offset);
     __u16 fragment_offset = fragment & IPV4_FRAGMENT_OFFSET_MASK;
     bool more_fragments = (fragment & IPV4_FRAGMENT_MORE) != 0U;
@@ -244,7 +248,7 @@ NOINLINE int ingress_ipv4(
             4U);
         if (!load_fragment(scratch)) return TC_ACT_SHOT;
         if (scratch->fragment_value.action == SB_SHARED_POLICY_BYPASS) {
-            return TC_ACT_PIPE;
+            return SB_SHARED_ACT_CONTINUE;
         }
         if (scratch->fragment_value.action != SB_SHARED_POLICY_PROXY) {
             return TC_ACT_SHOT;
@@ -283,7 +287,7 @@ NOINLINE int ingress_ipv4(
             if (more_fragments && !store_ipv4_fragment_bypass(scratch, skb, ip)) {
                 return TC_ACT_SHOT;
             }
-            return TC_ACT_PIPE;
+            return SB_SHARED_ACT_CONTINUE;
         }
         if (!ipv4_client_selected(
                 scratch->source_mac.address,
@@ -293,7 +297,7 @@ NOINLINE int ingress_ipv4(
             if (more_fragments && !store_ipv4_fragment_bypass(scratch, skb, ip)) {
                 return TC_ACT_SHOT;
             }
-            return TC_ACT_PIPE;
+            return SB_SHARED_ACT_CONTINUE;
         }
         __u8 policy = ipv4_policy(
             (const __u8 *)&ip->destination,
@@ -308,7 +312,7 @@ NOINLINE int ingress_ipv4(
             if (more_fragments && !store_ipv4_fragment_bypass(scratch, skb, ip)) {
                 return TC_ACT_SHOT;
             }
-            return TC_ACT_PIPE;
+            return SB_SHARED_ACT_CONTINUE;
         }
     }
 
@@ -370,8 +374,8 @@ NOINLINE int egress_ipv4(
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ipv4_header *ip = data + l3_offset;
-    if ((void *)(ip + 1) > data_end || ip->version != 4U || ip->ihl < 5U) return TC_ACT_PIPE;
-    if (!ipv4_token_address(ip->source, control)) return TC_ACT_PIPE;
+    if ((void *)(ip + 1) > data_end || ip->version != 4U || ip->ihl < 5U) return SB_SHARED_ACT_CONTINUE;
+    if (!ipv4_token_address(ip->source, control)) return SB_SHARED_ACT_CONTINUE;
     if (!selected_protocol(ip->protocol, control)) return TC_ACT_SHOT;
     __u16 fragment = swap16(ip->fragment_offset);
     __u16 fragment_offset = fragment & IPV4_FRAGMENT_OFFSET_MASK;
@@ -409,7 +413,7 @@ NOINLINE int egress_ipv4(
     }
     struct transport_ports *ports = (void *)ip + header_length;
     if ((void *)(ports + 1) > data_end) return TC_ACT_SHOT;
-    if (swap16(ports->source) != control->listener_port) return TC_ACT_PIPE;
+    if (swap16(ports->source) != control->listener_port) return SB_SHARED_ACT_CONTINUE;
 
     if (skb_pull_data(skb, 0U) != 0) return TC_ACT_SHOT;
     data = (void *)(long)skb->data;
@@ -432,20 +436,20 @@ NOINLINE int egress_ipv4(
         return TC_ACT_SHOT;
     }
 
-    __builtin_memset(&scratch->reply_key, 0, sizeof(scratch->reply_key));
-    scratch->reply_key.ifindex = skb->ifindex;
-    scratch->reply_key.family = AF_INET_VALUE;
-    scratch->reply_key.protocol = ip->protocol;
-    scratch->reply_key.client_port = swap16(ports->destination);
-    scratch->reply_key.listener_port = control->listener_port;
-    __builtin_memcpy(scratch->reply_key.client_addr, &ip->destination, 4U);
-    __builtin_memcpy(scratch->reply_key.token_addr, &ip->source, 4U);
-    struct sb_shared_reply_value *original = map_lookup(
-        &shared_reply,
-        &scratch->reply_key);
-    if (original == 0) return TC_ACT_SHOT;
+    __builtin_memset(&scratch->listener_key, 0, sizeof(scratch->listener_key));
+    scratch->listener_key.family = AF_INET_VALUE;
+    scratch->listener_key.protocol = ip->protocol;
+    scratch->listener_key.client_port = swap16(ports->destination);
+    scratch->listener_key.listener_port = control->listener_port;
+    __builtin_memcpy(scratch->listener_key.client_addr, &ip->destination, 4U);
+    __builtin_memcpy(scratch->listener_key.token_addr, &ip->source, 4U);
+    struct sb_shared_original_value *original = map_lookup(
+        &shared_flow_by_token,
+        &scratch->listener_key);
+    if (original == 0 || original->ifindex != skb->ifindex) return TC_ACT_SHOT;
+    __builtin_memcpy(&scratch->original_value, original, sizeof(scratch->original_value));
     __be32 original_address;
-    __builtin_memcpy(&original_address, original->original_addr, 4U);
+    __builtin_memcpy(&original_address, scratch->original_value.addr, 4U);
     if (more_fragments) {
         prepare_fragment_key(
             scratch,
@@ -469,7 +473,7 @@ NOINLINE int egress_ipv4(
         ip->source,
         original_address,
         ports->source,
-        swap16(original->original_port),
+        swap16(scratch->original_value.port),
         ip->protocol);
 }
 
@@ -547,7 +551,7 @@ NOINLINE int ingress_ipv6(
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ipv6_header *ip = data + l3_offset;
-    if ((void *)(ip + 1) > data_end || (swap32(ip->version_flow) >> 28U) != 6U) return TC_ACT_PIPE;
+    if ((void *)(ip + 1) > data_end || (swap32(ip->version_flow) >> 28U) != 6U) return SB_SHARED_ACT_CONTINUE;
     __u8 protocol = 0U;
     __u64 transport_result = ipv6_transport_offset(
         data,
@@ -559,13 +563,13 @@ NOINLINE int ingress_ipv6(
     __u8 fragment_state = (__u8)(
         (transport >> IPV6_FRAGMENT_STATE_SHIFT) & 0x3U);
     if (transport == IPV6_TRANSPORT_DROP) return TC_ACT_SHOT;
-    if (transport == IPV6_TRANSPORT_BYPASS) return TC_ACT_PIPE;
+    if (transport == IPV6_TRANSPORT_BYPASS) return SB_SHARED_ACT_CONTINUE;
     if ((transport & IPV6_TRANSPORT_MASK) < IPV6_TRANSPORT_MIN_OFFSET ||
         (transport & IPV6_TRANSPORT_MASK) > IPV6_TRANSPORT_MAX_OFFSET) {
         return TC_ACT_SHOT;
     }
     transport &= IPV6_TRANSPORT_MASK;
-    if (!selected_protocol(protocol, control)) return TC_ACT_PIPE;
+    if (!selected_protocol(protocol, control)) return SB_SHARED_ACT_CONTINUE;
     __u32 zero = 0U;
     struct sb_shared_scratch *scratch = map_lookup(&shared_scratch, &zero);
     if (scratch == 0) return TC_ACT_SHOT;
@@ -582,7 +586,7 @@ NOINLINE int ingress_ipv6(
             16U);
         if (!load_fragment(scratch)) return TC_ACT_SHOT;
         if (scratch->fragment_value.action == SB_SHARED_POLICY_BYPASS) {
-            return TC_ACT_PIPE;
+            return SB_SHARED_ACT_CONTINUE;
         }
         if (scratch->fragment_value.action != SB_SHARED_POLICY_PROXY) {
             return TC_ACT_SHOT;
@@ -618,7 +622,7 @@ NOINLINE int ingress_ipv6(
                 !store_ipv6_fragment_bypass(scratch, skb, ip, protocol, fragment_id)) {
                 return TC_ACT_SHOT;
             }
-            return TC_ACT_PIPE;
+            return SB_SHARED_ACT_CONTINUE;
         }
         if (!ipv6_client_selected(scratch->source_mac.address, ip->source, control)) {
             cache_bypass(scratch, protocol, tcp_sequence);
@@ -626,7 +630,7 @@ NOINLINE int ingress_ipv6(
                 !store_ipv6_fragment_bypass(scratch, skb, ip, protocol, fragment_id)) {
                 return TC_ACT_SHOT;
             }
-            return TC_ACT_PIPE;
+            return SB_SHARED_ACT_CONTINUE;
         }
         __u8 policy = ipv6_policy(
             ip->destination,
@@ -642,7 +646,7 @@ NOINLINE int ingress_ipv6(
                 !store_ipv6_fragment_bypass(scratch, skb, ip, protocol, fragment_id)) {
                 return TC_ACT_SHOT;
             }
-            return TC_ACT_PIPE;
+            return SB_SHARED_ACT_CONTINUE;
         }
     }
 
@@ -714,8 +718,8 @@ NOINLINE int egress_ipv6(
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ipv6_header *ip = data + l3_offset;
-    if ((void *)(ip + 1) > data_end || (swap32(ip->version_flow) >> 28U) != 6U) return TC_ACT_PIPE;
-    if (!ipv6_token_address(ip->source, control)) return TC_ACT_PIPE;
+    if ((void *)(ip + 1) > data_end || (swap32(ip->version_flow) >> 28U) != 6U) return SB_SHARED_ACT_CONTINUE;
+    if (!ipv6_token_address(ip->source, control)) return SB_SHARED_ACT_CONTINUE;
     __u8 protocol = 0U;
     __u64 transport_result = ipv6_transport_offset(
         data,
@@ -759,7 +763,7 @@ NOINLINE int egress_ipv6(
     struct transport_ports *ports = data + transport;
     if ((void *)(ports + 1) > data_end) return TC_ACT_SHOT;
     __be16 source_port_raw = ports->source;
-    if (swap16(source_port_raw) != control->listener_port) return TC_ACT_PIPE;
+    if (swap16(source_port_raw) != control->listener_port) return SB_SHARED_ACT_CONTINUE;
 
     if (skb_pull_data(skb, 0U) != 0) return TC_ACT_SHOT;
     data = (void *)(long)skb->data;
@@ -795,19 +799,18 @@ NOINLINE int egress_ipv6(
         return TC_ACT_SHOT;
     }
 
-    __builtin_memset(&scratch->reply_key, 0, sizeof(scratch->reply_key));
-    scratch->reply_key.ifindex = skb->ifindex;
-    scratch->reply_key.family = AF_INET6_VALUE;
-    scratch->reply_key.protocol = protocol;
-    scratch->reply_key.client_port = swap16(destination_port_raw);
-    scratch->reply_key.listener_port = control->listener_port;
-    copy_address(scratch->reply_key.client_addr, ip->destination, 16U);
-    copy_address(scratch->reply_key.token_addr, ip->source, 16U);
-    struct sb_shared_reply_value *original = map_lookup(
-        &shared_reply,
-        &scratch->reply_key);
-    if (original == 0) return TC_ACT_SHOT;
-    __builtin_memcpy(&scratch->reply_value, original, sizeof(scratch->reply_value));
+    __builtin_memset(&scratch->listener_key, 0, sizeof(scratch->listener_key));
+    scratch->listener_key.family = AF_INET6_VALUE;
+    scratch->listener_key.protocol = protocol;
+    scratch->listener_key.client_port = swap16(destination_port_raw);
+    scratch->listener_key.listener_port = control->listener_port;
+    copy_address(scratch->listener_key.client_addr, ip->destination, 16U);
+    copy_address(scratch->listener_key.token_addr, ip->source, 16U);
+    struct sb_shared_original_value *original = map_lookup(
+        &shared_flow_by_token,
+        &scratch->listener_key);
+    if (original == 0 || original->ifindex != skb->ifindex) return TC_ACT_SHOT;
+    __builtin_memcpy(&scratch->original_value, original, sizeof(scratch->original_value));
     if (fragment_state == SB_SHARED_FRAGMENT_FIRST) {
         prepare_fragment_key(
             scratch,
@@ -819,7 +822,7 @@ NOINLINE int egress_ipv6(
             ip->source,
             ip->destination,
             16U);
-        if (!store_fragment(scratch, scratch->reply_value.original_addr, 16U, SB_SHARED_POLICY_PROXY)) {
+        if (!store_fragment(scratch, scratch->original_value.addr, 16U, SB_SHARED_POLICY_PROXY)) {
             return TC_ACT_SHOT;
         }
     }
@@ -828,28 +831,28 @@ NOINLINE int egress_ipv6(
         l3_offset,
         transport,
         true,
-        scratch->reply_key.token_addr,
-        scratch->reply_value.original_addr,
+        scratch->listener_key.token_addr,
+        scratch->original_value.addr,
         source_port_raw,
-        swap16(scratch->reply_value.original_port),
+        swap16(scratch->original_value.port),
         protocol);
 }
 
 NOINLINE int classify_ingress(struct __sk_buff *skb) {
     __u32 zero = 0U;
     struct sb_shared_control *control = map_lookup(&shared_control, &zero);
-    if (control == 0 || control->enabled == 0U) return TC_ACT_PIPE;
+    if (control == 0 || control->enabled == 0U) return SB_SHARED_ACT_CONTINUE;
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ethernet_header *ethernet = data;
-    if ((void *)(ethernet + 1) > data_end) return TC_ACT_PIPE;
+    if ((void *)(ethernet + 1) > data_end) return SB_SHARED_ACT_CONTINUE;
     __u16 protocol = swap16(ethernet->protocol);
     __u32 l3_offset = sizeof(*ethernet);
 #pragma clang loop unroll(full)
     for (__u32 depth = 0U; depth < 2U; ++depth) {
         if (protocol != ETH_P_8021Q_VALUE && protocol != ETH_P_8021AD_VALUE) break;
         struct vlan_header *vlan = data + l3_offset;
-        if ((void *)(vlan + 1) > data_end) return TC_ACT_PIPE;
+        if ((void *)(vlan + 1) > data_end) return SB_SHARED_ACT_CONTINUE;
         protocol = swap16(vlan->protocol);
         l3_offset += sizeof(*vlan);
     }
@@ -863,24 +866,24 @@ NOINLINE int classify_ingress(struct __sk_buff *skb) {
     if (protocol == ETH_P_IPV6_VALUE && (control->flags & SB_SHARED_FLAG_IPV6) != 0U) {
         return ingress_ipv6(skb, l3_offset, control, source_mac_first, source_mac_last);
     }
-    return TC_ACT_PIPE;
+    return SB_SHARED_ACT_CONTINUE;
 }
 
 NOINLINE int classify_egress(struct __sk_buff *skb) {
     __u32 zero = 0U;
     struct sb_shared_control *control = map_lookup(&shared_control, &zero);
-    if (control == 0 || control->enabled == 0U) return TC_ACT_PIPE;
+    if (control == 0 || control->enabled == 0U) return SB_SHARED_ACT_CONTINUE;
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ethernet_header *ethernet = data;
-    if ((void *)(ethernet + 1) > data_end) return TC_ACT_PIPE;
+    if ((void *)(ethernet + 1) > data_end) return SB_SHARED_ACT_CONTINUE;
     __u16 protocol = swap16(ethernet->protocol);
     __u32 l3_offset = sizeof(*ethernet);
 #pragma clang loop unroll(full)
     for (__u32 depth = 0U; depth < 2U; ++depth) {
         if (protocol != ETH_P_8021Q_VALUE && protocol != ETH_P_8021AD_VALUE) break;
         struct vlan_header *vlan = data + l3_offset;
-        if ((void *)(vlan + 1) > data_end) return TC_ACT_PIPE;
+        if ((void *)(vlan + 1) > data_end) return SB_SHARED_ACT_CONTINUE;
         protocol = swap16(vlan->protocol);
         l3_offset += sizeof(*vlan);
     }
@@ -890,7 +893,7 @@ NOINLINE int classify_egress(struct __sk_buff *skb) {
     if (protocol == ETH_P_IPV6_VALUE && (control->flags & SB_SHARED_FLAG_IPV6) != 0U) {
         return egress_ipv6(skb, l3_offset, control);
     }
-    return TC_ACT_PIPE;
+    return SB_SHARED_ACT_CONTINUE;
 }
 
 SEC("classifier/ingress")

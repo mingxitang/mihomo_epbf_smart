@@ -3,6 +3,7 @@
 package sing_ebpf
 
 import (
+	"errors"
 	"net"
 	"net/netip"
 
@@ -70,6 +71,18 @@ func (i *Inbound) NewPacket(data []byte, oob []byte, source netip.AddrPort) {
 	original := cached.original
 	if !loaded {
 		original, err = backend.LookupOriginal(ECommon.ProtocolUDP, redirectDestination)
+		if errors.Is(err, unix.ENOENT) {
+			original, err = backend.RecoverUDPOriginal(redirectDestination)
+			if err == nil {
+				i.udpWarnings.originalDestination.warn(i.logWarn, "recovered UDP original destination")
+			}
+		}
+		if errors.Is(err, unix.ENOENT) {
+			original, err = backend.RecoverConnectedUDPOriginal(redirectDestination)
+			if err == nil {
+				i.udpWarnings.originalDestination.warn(i.logWarn, "recovered connected UDP original destination")
+			}
+		}
 		if err != nil {
 			i.udpWarnings.originalDestination.warn(i.logWarn, "lookup UDP original destination: ", err)
 			return

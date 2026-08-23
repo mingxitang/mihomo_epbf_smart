@@ -433,9 +433,14 @@ func (i *Inbound) unregisterSocketProtect() {
 	i.protectRegistered = false
 }
 
-// InterfaceUpdated notifies the shared-network TC manager that interfaces may
-// have changed, so it can attach/detach downstream interfaces.
+// InterfaceUpdated refreshes local host addresses and notifies the
+// shared-network TC manager that downstream interfaces may have changed.
 func (i *Inbound) InterfaceUpdated() {
+	if backend := i.backendInstance(); backend != nil && !backend.IsClosed() {
+		if err := i.refreshHostAddresses(backend); err != nil {
+			log.Warnln("[EBPF] refresh local interface host addresses: %s", err.Error())
+		}
+	}
 	if err := i.refreshCgroupIPv6Availability(false); err != nil {
 		log.Warnln("[EBPF] refresh local cgroup IPv6 availability: %s", err.Error())
 	}
@@ -482,6 +487,23 @@ func (i *Inbound) udpPeriodicLoop(stop <-chan struct{}, done chan<- struct{}) {
 					i.deleteUDPRedirects([]netip.Addr{release.reference.address})
 				}
 			})
+			if backend := i.backendInstance(); backend != nil && !backend.IsClosed() {
+				maxAge := 2 * i.udpTimeout
+				if maxAge < 30*time.Second {
+					maxAge = 30 * time.Second
+				}
+				result, sweepErr := backend.SweepStaleTCPRedirects(maxAge, 1024)
+				if sweepErr != nil {
+					i.udpWarnings.cleanup.warn(i.logWarn, "sweep stale TCP redirects: ", sweepErr)
+				} else if result.Removed > 0 {
+					log.Debugln("[EBPF] swept %d stale TCP redirects", result.Removed)
+				}
+				if result, sweepErr := backend.SweepStaleUDPRedirects(maxAge, 1024); sweepErr != nil {
+					i.udpWarnings.cleanup.warn(i.logWarn, "sweep stale UDP redirects: ", sweepErr)
+				} else if result.Removed > 0 {
+					log.Debugln("[EBPF] swept %d stale UDP redirects", result.Removed)
+				}
+			}
 		case <-bypassTicker.C:
 			i.refreshBypassCIDRPeriodic()
 		}
@@ -524,19 +546,11 @@ func localInterfacePrefixes() []netip.Prefix {
 			if !prefix.IsValid() {
 				continue
 			}
-			prefix = prefix.Masked()
 			address := prefix.Addr().Unmap()
-			prefixBits := prefix.Bits()
-			if prefix.Addr().Is4In6() {
-				if prefixBits < 96 {
-					continue
-				}
-				prefixBits -= 96
-			}
 			if address.IsUnspecified() || address.IsLoopback() {
 				continue
 			}
-			prefixes = append(prefixes, netip.PrefixFrom(address, prefixBits).Masked())
+			prefixes = append(prefixes, netip.PrefixFrom(address, address.BitLen()))
 		}
 	}
 	return prefixes
