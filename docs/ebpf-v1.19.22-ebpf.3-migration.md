@@ -107,6 +107,10 @@ WSL is denied. GitHub-hosted runners also do not guarantee the required kernel
 and cgroup capabilities, so the privileged suite remains a target-device gate
 rather than an Android artifact publication gate.
 
+The generated-object check uses stable Android NDK r29 (Clang 21), matching
+the version guard in `common/ebpf/Makefile`. The older `r29-beta1` workflow
+input is incompatible with that reproducible generation contract.
+
 GitHub Actions run
 [`32347359334`](https://github.com/mingxitang/mihomo_epbf_smart/actions/runs/32347359334)
 validated the ordinary tests, tagged eBPF package tests, generated objects,
