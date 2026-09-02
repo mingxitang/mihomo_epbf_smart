@@ -16,3 +16,6 @@ After validation, update the corresponding commit and release marker in
 `.github/upstream-state.json` before pushing `Alpha`. A successful push starts
 the build workflow; the synchronization failure issue is closed by the next
 successful synchronization run.
+
+Keep validation and release workflows in separate concurrency groups so a
+push-triggered validation run cannot cancel the release build.
