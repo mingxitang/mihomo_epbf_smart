@@ -6,6 +6,7 @@ import (
 
 	"github.com/metacubex/mihomo/common/lru"
 	"github.com/metacubex/mihomo/component/fakeip"
+	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 )
 
@@ -187,6 +188,17 @@ func NewEnhancer(cfg EnhancerConfig) *ResolverEnhancer {
 		}
 		e.mapping = lru.New(lru.WithSize[netip.Addr, string](4096))
 	}
+
+	var fakeIPIPv4, fakeIPIPv6 netip.Prefix
+	if cfg.EnhancedMode == C.DNSFakeIP {
+		if e.fakeIPPool != nil {
+			fakeIPIPv4 = e.fakeIPPool.IPNet()
+		}
+		if e.fakeIPPool6 != nil {
+			fakeIPIPv6 = e.fakeIPPool6.IPNet()
+		}
+	}
+	resolver.EBFPFakeIPRanges.Set(fakeIPIPv4, fakeIPIPv6)
 
 	return e
 }

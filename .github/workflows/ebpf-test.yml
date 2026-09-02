@@ -45,7 +45,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -count=1 -tags "with_gvisor with_ebpf" ./common/ebpf/... ./listener/sing_ebpf/...
+          go test -count=1 -tags "with_gvisor with_ebpf" \
+            ./common/ebpf/... ./listener/sing_ebpf/... \
+            ./experimental/tanaka/common/ebpf/... ./experimental/tanaka/listener/sing_ebpf/...
 
   generate-check:
     runs-on: ubuntu-latest

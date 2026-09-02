@@ -1,0 +1,411 @@
+//go:build with_ebpf && (linux || android)
+
+package sing_ebpf
+
+import (
+	"path/filepath"
+	"sort"
+	"strings"
+
+	ECommon "github.com/metacubex/mihomo/experimental/tanaka/common/ebpf"
+	LC "github.com/metacubex/mihomo/experimental/tanaka/listener/config"
+
+	E "github.com/metacubex/sing/common/exceptions"
+)
+
+const (
+	ebpfModeLocal  = "local"
+	ebpfModeShared = "shared"
+	ebpfModeHybrid = "hybrid"
+
+	dnsModeHijack        = "hijack"
+	dnsModeRespectPolicy = "respect_policy"
+	dnsModeRespectBypass = "respect_bypass"
+	dnsModeOff           = "off"
+
+	defaultTCPriority = 1
+)
+
+const (
+	sharedDataPlaneSocketAssign  = "socket_assign"
+	sharedDataPlanePacketRewrite = "packet_rewrite"
+)
+
+func normalizeMode(mode string) (string, bool, bool, error) {
+	switch mode {
+	case "", ebpfModeLocal:
+		return ebpfModeLocal, true, false, nil
+	case ebpfModeShared:
+		return ebpfModeShared, false, true, nil
+	case ebpfModeHybrid:
+		return ebpfModeHybrid, true, true, nil
+	default:
+		return "", false, false, E.New("unknown eBPF mode: ", mode)
+	}
+}
+
+func normalizeDNSMode(mode string) (string, error) {
+	switch mode {
+	case "", dnsModeHijack:
+		return dnsModeHijack, nil
+	case dnsModeRespectPolicy, dnsModeRespectBypass, dnsModeOff:
+		return mode, nil
+	default:
+		return "", E.New("unknown eBPF dns_mode: ", mode)
+	}
+}
+
+func toCommonDNSMode(mode string) ECommon.DNSMode {
+	switch mode {
+	case dnsModeRespectPolicy, dnsModeRespectBypass:
+		return ECommon.DNSModeRespectPolicy
+	case dnsModeOff:
+		return ECommon.DNSModeOff
+	default:
+		return ECommon.DNSModeHijack
+	}
+}
+
+func enabledByDefault(value *bool) bool {
+	return value == nil || *value
+}
+
+func validateLocalOptions(enabled bool, options LC.EBPFLocal) error {
+	if enabled {
+		return nil
+	}
+	if options.DNSMode != "" {
+		return E.New("local.dns_mode requires local or hybrid mode")
+	}
+	if options.IPv6 != nil {
+		return E.New("local.ipv6 requires local or hybrid mode")
+	}
+	if options.BypassPrivateAddress != nil {
+		return E.New("local.bypass_private_address requires local or hybrid mode")
+	}
+	if len(options.IncludeUID) > 0 || len(options.IncludeUIDRange) > 0 ||
+		len(options.ExcludeUID) > 0 || len(options.ExcludeUIDRange) > 0 ||
+		len(options.IncludeAndroidUser) > 0 || len(options.IncludePackage) > 0 ||
+		len(options.ExcludePackage) > 0 {
+		return E.New("local UID policy requires local or hybrid mode")
+	}
+	return nil
+}
+
+func validateAndroidUIDOptions(goos string, options LC.EBPFLocal) error {
+	if !hasAndroidUIDOptions(options) {
+		return nil
+	}
+	if goos != "android" {
+		return E.New("include_android_user, include_package, and exclude_package are only supported on Android")
+	}
+	const maxAndroidUserID = (uint64(^uint32(0)-1) - (androidUserRange - 1)) / androidUserRange
+	for _, userID := range options.IncludeAndroidUser {
+		if userID < 0 || uint64(userID) > maxAndroidUserID {
+			return E.New("invalid include_android_user: ", userID)
+		}
+	}
+	return nil
+}
+
+func hasAndroidUIDOptions(options LC.EBPFLocal) bool {
+	return len(options.IncludeAndroidUser) > 0 || len(options.IncludePackage) > 0 ||
+		len(options.ExcludePackage) > 0
+}
+
+func parseUIDRanges(includeUID []uint32, includeUIDRange []string) ([]ECommon.UIDRange, error) {
+	uidRanges := make([]ECommon.UIDRange, 0, len(includeUID)+len(includeUIDRange))
+	for _, uid := range includeUID {
+		uidRanges = append(uidRanges, ECommon.UIDRange{Start: uid, End: uid})
+	}
+	for _, text := range includeUIDRange {
+		start, end, found := strings.Cut(text, ":")
+		if !found {
+			parsed, err := parseUint32(start)
+			if err != nil {
+				return nil, E.New("invalid UID range: ", text)
+			}
+			uidRanges = append(uidRanges, ECommon.UIDRange{Start: parsed, End: parsed})
+			continue
+		}
+		startValue, err := parseUint32(start)
+		if err != nil {
+			return nil, E.New("invalid UID range: ", text)
+		}
+		endValue, err := parseUint32(end)
+		if err != nil {
+			return nil, E.New("invalid UID range: ", text)
+		}
+		if startValue > endValue {
+			return nil, E.New("invalid UID range: ", text)
+		}
+		uidRanges = append(uidRanges, ECommon.UIDRange{Start: startValue, End: endValue})
+	}
+	return uidRanges, nil
+}
+
+func parseUint32(text string) (uint32, error) {
+	var value uint32
+	for _, char := range text {
+		if char < '0' || char > '9' {
+			return 0, E.New("invalid number: ", text)
+		}
+		next := value*10 + uint32(char-'0')
+		if next < value {
+			return 0, E.New("number overflows: ", text)
+		}
+		value = next
+	}
+	return value, nil
+}
+
+func parseSharedMACAddresses(name string, values []string) ([]ECommon.MACAddress, error) {
+	addresses := make([]ECommon.MACAddress, 0, len(values))
+	for _, text := range values {
+		var address ECommon.MACAddress
+		parsed, err := parseMAC(text)
+		if err != nil {
+			return nil, E.New("invalid ", name, ": ", text)
+		}
+		copy(address[:], parsed)
+		addresses = append(addresses, address)
+	}
+	return addresses, nil
+}
+
+func parseMAC(text string) ([]byte, error) {
+	parts := strings.Split(text, ":")
+	if len(parts) != 6 {
+		return nil, E.New("invalid MAC address")
+	}
+	address := make([]byte, 6)
+	for index, part := range parts {
+		if len(part) != 2 {
+			return nil, E.New("invalid MAC address")
+		}
+		value, err := parseHexByte(part)
+		if err != nil {
+			return nil, err
+		}
+		address[index] = value
+	}
+	return address, nil
+}
+
+func parseHexByte(text string) (byte, error) {
+	var value byte
+	for _, char := range text {
+		var digit byte
+		switch {
+		case char >= '0' && char <= '9':
+			digit = byte(char - '0')
+		case char >= 'a' && char <= 'f':
+			digit = byte(char-'a') + 10
+		case char >= 'A' && char <= 'F':
+			digit = byte(char-'A') + 10
+		default:
+			return 0, E.New("invalid hex digit: ", string(char))
+		}
+		value = value<<4 | digit
+	}
+	return value, nil
+}
+
+func parsePortRanges(name string, ports []uint16, ranges []string) ([]ECommon.PortRange, error) {
+	result := make([]ECommon.PortRange, 0, len(ports)+len(ranges))
+	for _, port := range ports {
+		if port == 0 {
+			return nil, E.New(name, " contains port 0")
+		}
+		result = append(result, ECommon.PortRange{Start: port, End: port})
+	}
+	for _, value := range ranges {
+		separator := strings.IndexByte(value, ':')
+		if separator <= 0 || separator == len(value)-1 {
+			return nil, E.New(name, " invalid range: ", value)
+		}
+		var startValue, endValue uint16
+		startText := value[:separator]
+		endText := value[separator+1:]
+		for _, char := range startText {
+			if char < '0' || char > '9' {
+				return nil, E.New(name, " invalid range start: ", value)
+			}
+			next := startValue*10 + uint16(char-'0')
+			if next < startValue || next == 0 {
+				return nil, E.New(name, " invalid range start: ", value)
+			}
+			startValue = next
+		}
+		for _, char := range endText {
+			if char < '0' || char > '9' {
+				return nil, E.New(name, " invalid range end: ", value)
+			}
+			next := endValue*10 + uint16(char-'0')
+			if next < endValue {
+				return nil, E.New(name, " invalid range end: ", value)
+			}
+			endValue = next
+		}
+		if startValue == 0 || startValue > endValue {
+			return nil, E.New(name, " invalid range: ", value)
+		}
+		result = append(result, ECommon.PortRange{Start: startValue, End: endValue})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Start != result[j].Start {
+			return result[i].Start < result[j].Start
+		}
+		return result[i].End < result[j].End
+	})
+	merged := result[:0]
+	for _, current := range result {
+		if len(merged) == 0 || uint32(current.Start) > uint32(merged[len(merged)-1].End)+1 {
+			merged = append(merged, current)
+			continue
+		}
+		if current.End > merged[len(merged)-1].End {
+			merged[len(merged)-1].End = current.End
+		}
+	}
+	return merged, nil
+}
+
+func normalizeSharedOptions(options LC.EBPFShared) (LC.EBPFShared, error) {
+	if len(options.Interface) == 0 {
+		return LC.EBPFShared{}, E.New("shared.interface must not be empty")
+	}
+	seen := make(map[string]struct{}, len(options.Interface))
+	interfaces := make([]string, 0, len(options.Interface))
+	for _, interfaceName := range options.Interface {
+		interfaceName = strings.TrimSpace(interfaceName)
+		if interfaceName == "" {
+			return LC.EBPFShared{}, E.New("shared.interface contains an empty interface name")
+		}
+		if interfaceName == "lo" {
+			return LC.EBPFShared{}, E.New("shared.interface must not contain lo")
+		}
+		if _, loaded := seen[interfaceName]; loaded {
+			continue
+		}
+		seen[interfaceName] = struct{}{}
+		interfaces = append(interfaces, interfaceName)
+	}
+	options.Interface = interfaces
+	return options, nil
+}
+
+func validateSharedOptions(enabled bool, options LC.EBPFShared) error {
+	if enabled {
+		return nil
+	}
+	if options.DNSMode != "" {
+		return E.New("shared.dns_mode requires shared or hybrid mode")
+	}
+	if options.IPv6 != nil {
+		return E.New("shared.ipv6 requires shared or hybrid mode")
+	}
+	if options.BypassPrivateAddress != nil {
+		return E.New("shared.bypass_private_address requires shared or hybrid mode")
+	}
+	if len(options.Interface) > 0 {
+		return E.New("shared.interface requires shared or hybrid mode")
+	}
+	if len(options.IncludeSourceCIDR) > 0 || len(options.ExcludeSourceCIDR) > 0 ||
+		len(options.IncludeMACAddress) > 0 || len(options.ExcludeMACAddress) > 0 {
+		return E.New("shared source policy requires shared or hybrid mode")
+	}
+	return nil
+}
+
+const (
+	localDataPlaneTC     = "tc"
+	localDataPlaneCgroup = "cgroup"
+)
+
+type normalizedDataPlanes struct {
+	mode            string
+	localEnabled    bool
+	localDataPlane  string
+	cgroupPath      string
+	sharedEnabled   bool
+	sharedDataPlane string
+}
+
+func normalizeDataPlanes(options LC.EBPF) (normalizedDataPlanes, error) {
+	mode, localEnabled, sharedEnabled, err := normalizeModeWithEnabled(options.Mode, options.Local.Enabled, options.Shared.Enabled)
+	if err != nil {
+		return normalizedDataPlanes{}, err
+	}
+	localDataPlane, cgroupPath, err := normalizeLocalDataPlane(options.Local)
+	if err != nil {
+		return normalizedDataPlanes{}, err
+	}
+	sharedDataPlane, err := normalizeSharedDataPlane(options.Shared)
+	if err != nil {
+		return normalizedDataPlanes{}, err
+	}
+	return normalizedDataPlanes{mode: mode, localEnabled: localEnabled, localDataPlane: localDataPlane, cgroupPath: cgroupPath, sharedEnabled: sharedEnabled, sharedDataPlane: sharedDataPlane}, nil
+}
+
+func normalizeSharedDataPlane(options LC.EBPFShared) (string, error) {
+	switch options.DataPlane {
+	case "", sharedDataPlanePacketRewrite:
+		return sharedDataPlanePacketRewrite, nil
+	case sharedDataPlaneSocketAssign:
+		return sharedDataPlaneSocketAssign, nil
+	default:
+		return "", E.New("unknown shared.data_plane: ", options.DataPlane)
+	}
+}
+
+func normalizeLocalDataPlane(options LC.EBPFLocal) (string, string, error) {
+	dataPlane := options.DataPlane
+	if dataPlane == "" {
+		dataPlane = localDataPlaneCgroup
+	}
+	if dataPlane != localDataPlaneTC && dataPlane != localDataPlaneCgroup {
+		return "", "", E.New("unknown local.data_plane: ", dataPlane)
+	}
+	if dataPlane != localDataPlaneCgroup && options.CgroupPath != "" {
+		return "", "", E.New("local.cgroup_path requires local.data_plane=cgroup")
+	}
+	if options.CgroupPath == "" {
+		return dataPlane, "", nil
+	}
+	if !filepath.IsAbs(options.CgroupPath) {
+		return "", "", E.New("local.cgroup_path must be absolute")
+	}
+	return dataPlane, filepath.Clean(options.CgroupPath), nil
+}
+
+func normalizeModeWithEnabled(mode string, localEnabled, sharedEnabled *bool) (string, bool, bool, error) {
+	if localEnabled != nil || sharedEnabled != nil {
+		if mode != "" {
+			return "", false, false, E.New("mode cannot be combined with local.enabled or shared.enabled")
+		}
+		local := localEnabled != nil && *localEnabled
+		shared := sharedEnabled != nil && *sharedEnabled
+		if !local && !shared {
+			return "", false, false, E.New("local.enabled or shared.enabled must be enabled")
+		}
+		switch {
+		case local && shared:
+			return ebpfModeHybrid, true, true, nil
+		case local:
+			return ebpfModeLocal, true, false, nil
+		default:
+			return ebpfModeShared, false, true, nil
+		}
+	}
+	switch mode {
+	case "", ebpfModeLocal:
+		return ebpfModeLocal, true, false, nil
+	case ebpfModeShared:
+		return ebpfModeShared, false, true, nil
+	case ebpfModeHybrid:
+		return ebpfModeHybrid, true, true, nil
+	default:
+		return "", false, false, E.New("unknown eBPF mode: ", mode)
+	}
+}

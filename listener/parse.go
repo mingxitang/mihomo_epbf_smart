@@ -79,6 +79,13 @@ func ParseListener(mapping map[string]any) (C.InboundListener, error) {
 			return nil, err
 		}
 		listener, err = IN.NewEBPF(ebpfOption)
+	case "ebpf-next":
+		ebpfOption := &IN.EBPFNextOption{}
+		err = decoder.Decode(mapping, ebpfOption)
+		if err != nil {
+			return nil, err
+		}
+		listener, err = IN.NewEBPFNext(ebpfOption)
 	case "shadowsocks":
 		shadowsocksOption := &IN.ShadowSocksOption{UDP: true}
 		err = decoder.Decode(mapping, shadowsocksOption)
