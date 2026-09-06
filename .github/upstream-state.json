@@ -12,5 +12,10 @@
     "commit": "0c8987595fa2d4466681353bc92111b1f1fa584c",
     "release_tag": "v1.19.22-ebpf.3",
     "release_marker": "v1.19.22-ebpf.3|2026-08-17T10:00:01Z|2026-08-17T09:45:24Z|7"
+  },
+  "ebpf_next": {
+    "repository": "TanakaLun/mihomo",
+    "branch": "ebpf-inbound",
+    "commit": "e88bb8c61909d63b9a50f8445ed1aa705caefbc5"
   }
 }
