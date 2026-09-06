@@ -10,15 +10,22 @@ import (
 
 func TestTCProgramRunIntegration(t *testing.T) {
 	requireEBPFIntegration(t, "run unified TC eBPF programs in the kernel")
-	backend, err := PrepareTC(TCConfig{
-		ListenerPort:        65531,
-		EnableShared:        true,
-		EnableIPv4:          true,
+	policy, err := CompilePolicy(PolicyConfig{
 		EnableTCP:           true,
 		SharedDNSMode:       DNSModeRespectPolicy,
 		SharedBypassPrivate: true,
 		FakeIPIPv4:          netip.MustParsePrefix("198.18.0.0/15"),
 		IncludeSourceMAC:    []MACAddress{{0x02, 0, 0, 0, 0, 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := PrepareTC(TCConfig{
+		ListenerPort: 65531,
+		EnableShared: true,
+		EnableIPv4:   true,
+		EnableTCP:    true,
+		Policy:       policy,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +105,7 @@ func TestTCIPv6PathIsolationIntegration(t *testing.T) {
 	}{
 		{
 			"shared IPv6 disabled on shared program",
-			TCConfig{EnableLocal: true, EnableIPv4: true, EnableLocalIPv6: true, EnableTCP: true},
+			TCConfig{EnableLocal: true, EnableShared: true, EnableIPv4: true, EnableLocalIPv6: true, EnableTCP: true},
 			tcProgramSharedIngressEthernet,
 			testTCActUnspec,
 		},
@@ -116,7 +123,7 @@ func TestTCIPv6PathIsolationIntegration(t *testing.T) {
 		},
 		{
 			"local IPv6 disabled on delivery program",
-			TCConfig{EnableShared: true, EnableIPv4: true, EnableSharedIPv6: true, EnableTCP: true},
+			TCConfig{EnableLocal: true, EnableShared: true, EnableIPv4: true, EnableSharedIPv6: true, EnableTCP: true},
 			tcProgramDeliveryIngress,
 			testTCActUnspec,
 		},
