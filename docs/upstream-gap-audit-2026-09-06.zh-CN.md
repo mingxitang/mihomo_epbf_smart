@@ -82,4 +82,6 @@
 - 补齐实验后端生成检查和特权测试范围；特权测试仍受目标内核能力约束。
 - 本地 Smart/Hysteria 回归测试、Linux 新旧后端特权测试编译、实验监听层测试编译、Android ARM64 构建通过；BPF manifest 校验通过。
 - 首轮 CI 重新生成检查通过。特权日志暴露旧测试过期 API、实验测试 typed-nil 游标/遍历终止错误及未加载程序访问，已修正测试代码。特权测试编译现为独立必过步骤。
-- 最终 GitHub Actions 验证进行中，完成后补充结果。
+- 最终 GitHub Actions [34022827406](https://github.com/mingxitang/mihomo_epbf_smart/actions/runs/34022827406) 全部通过：go vet、普通与 eBPF 带标签测试、两套 BPF 重新生成检查、特权集成测试、Windows/macOS/Linux 编译、Android ARM64 构建及产物上传。
+- 特权测试日志确认实际通过；仅额外开关控制的 TestCgroupBackendTrafficStressIntegration 压力测试未启用。上述结果不能替代用户目标 Android 设备的长期流量验证。
+- 已通过 [PR #5](https://github.com/mingxitang/mihomo_epbf_smart/pull/5) 合入 codex/ebpf-next，合并提交 b716bf8a；Alpha 未变更。

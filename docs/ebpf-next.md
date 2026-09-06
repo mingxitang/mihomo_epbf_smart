@@ -79,7 +79,12 @@ path-mapped port, not a whole-tree merge. Future eBPF-next updates should diff
 from e88bb8c6 and map common/ebpf and listener/sing_ebpf into
 experimental/tanaka, with listener/config/ebpf.go mapped likewise.
 
-Validation results are recorded in the accompanying dated gap audit.
+Validation passed in [Actions run 34022827406](https://github.com/mingxitang/mihomo_epbf_smart/actions/runs/34022827406): ordinary and tagged tests, vet,
+both BPF generation checks, privileged integration, Android ARM64 build, and
+Windows/macOS/Linux compilation. The optional cgroup traffic stress test was
+not enabled. [PR #5](https://github.com/mingxitang/mihomo_epbf_smart/pull/5)
+merged the update into codex/ebpf-next at b716bf8a. Target-device long-running
+traffic validation remains outstanding.
 
 The first privileged run exposed stale test APIs in the legacy suite and two
 upstream experimental test defects: a typed-nil NextKeyBytes cursor/end-of-map
