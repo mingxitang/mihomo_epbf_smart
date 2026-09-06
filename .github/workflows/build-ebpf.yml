@@ -8,6 +8,7 @@ on:
   pull_request:
     branches:
       - Alpha
+      - codex/ebpf-next
   workflow_dispatch:
 
 permissions:
@@ -68,7 +69,9 @@ jobs:
       - name: Check generated BPF objects
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: make ebpf_check
+        run: |
+          make ebpf_check
+          make -C experimental/tanaka/common/ebpf check
 
   build:
     needs:
@@ -157,7 +160,7 @@ jobs:
           go_bin="$(command -v go)"
           sudo -E env SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=0 GOCACHE=/tmp/gocache \
             "${go_bin}" test -count=1 -tags "with_gvisor with_ebpf ebpf_integration" \
-            ./common/ebpf/... -run 'Integration'
+            ./common/ebpf/... ./experimental/tanaka/common/ebpf/... -run 'Integration'
 
   cross-platform:
     runs-on: ubuntu-latest

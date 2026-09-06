@@ -68,7 +68,9 @@ jobs:
       - name: Check generated object
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: make ebpf_check
+        run: |
+          make ebpf_check
+          make -C experimental/tanaka/common/ebpf check
 
   build:
     needs:
