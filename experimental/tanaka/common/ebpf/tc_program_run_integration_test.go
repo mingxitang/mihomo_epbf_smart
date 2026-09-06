@@ -105,7 +105,7 @@ func TestTCIPv6PathIsolationIntegration(t *testing.T) {
 	}{
 		{
 			"shared IPv6 disabled on shared program",
-			TCConfig{EnableLocal: true, EnableIPv4: true, EnableLocalIPv6: true, EnableTCP: true},
+			TCConfig{EnableLocal: true, EnableShared: true, EnableIPv4: true, EnableLocalIPv6: true, EnableTCP: true},
 			tcProgramSharedIngressEthernet,
 			testTCActUnspec,
 		},
@@ -123,7 +123,7 @@ func TestTCIPv6PathIsolationIntegration(t *testing.T) {
 		},
 		{
 			"local IPv6 disabled on delivery program",
-			TCConfig{EnableShared: true, EnableIPv4: true, EnableSharedIPv6: true, EnableTCP: true},
+			TCConfig{EnableLocal: true, EnableShared: true, EnableIPv4: true, EnableSharedIPv6: true, EnableTCP: true},
 			tcProgramDeliveryIngress,
 			testTCActUnspec,
 		},

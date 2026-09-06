@@ -70,7 +70,8 @@ The update adds client-data-plane DNS replies, bypass CIDR updates on every
 active backend, immutable compiled policies, event-driven shared-flow cleanup,
 and TCX/sysctl lifecycle fixes. Both generation-check workflows now check the
 experimental objects as well. The build workflow includes experimental backend
-privileged tests, with host-capability failures remaining advisory.
+privileged tests, with host-capability failures remaining advisory. Integration-test compilation
+is a separate required step so compile errors cannot be hidden by that policy.
 
 `.github/upstream-state.json` records the Smart merge and the legacy eBPF
 release. The experimental eBPF snapshot is recorded here because it is a
@@ -79,3 +80,8 @@ from e88bb8c6 and map common/ebpf and listener/sing_ebpf into
 experimental/tanaka, with listener/config/ebpf.go mapped likewise.
 
 Validation results are recorded in the accompanying dated gap audit.
+
+The first privileged run exposed stale test APIs in the legacy suite and two
+upstream experimental test defects: a typed-nil NextKeyBytes cursor/end-of-map
+handling, and IPv6 tests requesting programs for disabled data planes. These
+test helpers/configurations were corrected without changing either data plane.

@@ -22,7 +22,7 @@ func countMapEntries(fd int, keySize uintptr, maxEntries uint32) (uint32, error)
 	if keySize == 0 || keySize > uintptr(^uint(0)>>1) {
 		return 0, errors.New("invalid BPF map key size")
 	}
-	var key []byte
+	var key any
 	var count uint32
 	for {
 		next, nextErr := mapInstance.NextKeyBytes(key)
@@ -31,6 +31,9 @@ func countMapEntries(fd int, keySize uintptr, maxEntries uint32) (uint32, error)
 		}
 		if nextErr != nil {
 			return 0, nextErr
+		}
+		if next == nil {
+			return count, nil
 		}
 		if uintptr(len(next)) != keySize {
 			return 0, errors.New("BPF map returned an unexpected key size")

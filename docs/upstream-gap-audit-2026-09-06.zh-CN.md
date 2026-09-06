@@ -80,4 +80,6 @@
 - eBPF 已将 e3256f2f..e88bb8c6 的增量映射至 experimental/tanaka；保留本地超时秒单位校验、Fake-IP 同步和 UDP 缓冲区管理。旧 ebpf 后端未被覆盖。
 - 同步了 Smart 发布标记；实验 eBPF 基线单独记录在 docs/ebpf-next.md。
 - 补齐实验后端生成检查和特权测试范围；特权测试仍受目标内核能力约束。
-- 验证进行中，完成后补充结果。
+- 本地 Smart/Hysteria 回归测试、Linux 新旧后端特权测试编译、实验监听层测试编译、Android ARM64 构建通过；BPF manifest 校验通过。
+- 首轮 CI 重新生成检查通过。特权日志暴露旧测试过期 API、实验测试 typed-nil 游标/遍历终止错误及未加载程序访问，已修正测试代码。特权测试编译现为独立必过步骤。
+- 最终 GitHub Actions 验证进行中，完成后补充结果。
